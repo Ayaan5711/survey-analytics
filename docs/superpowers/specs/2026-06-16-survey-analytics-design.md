@@ -30,7 +30,7 @@ separate repository, not an extension of pulseiq-mvp.
   `resource`-based CPU/memory/time limits. The limiter is an isolated module so a
   Windows-specific fallback (timeout-only) can be swapped in for local dev if needed.
 
-```
+```text
 survey-analytics/
   backend/
     app/
@@ -100,9 +100,12 @@ The first message in the chat stream, generated once per session and cached:
    (cap ~4 steps): chain Tier-1 tool calls (free), accumulate findings, then synthesize a
    narrative across multiple charts, escalating to one Tier-2 call only if a custom chart is
    needed to illustrate a finding.
-4. Every response includes: chart (PNG or Plotly JSON per chart complexity), narrative,
-   generated code (for Tier-2 responses, shown via a "Show code" toggle), 2-3 follow-up
-   question suggestions (generated in the same call, no extra cost), and caveats (section 6).
+4. Every response includes: a chart, a narrative, generated code (for Tier-2 responses, shown
+   via a "Show code" toggle), 2-3 follow-up question suggestions (generated in the same call,
+   no extra cost), and caveats (section 6). Chart format: PNG by default; the agent emits
+   Plotly JSON instead when the chart has multiple series/dimensions or benefits from
+   zoom/hover (e.g. multi-line trends, many-category breakdowns) — a simple rule-of-thumb
+   encoded in the code-gen prompt, not a separate decision step.
 
 **Multi-turn state:** stateless per-turn — each turn loads the cached profile/Parquet fresh in
 the sandbox; the LLM relies on conversation history (with sliding-window summarization, section
