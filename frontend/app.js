@@ -233,16 +233,25 @@ function resetDropZone() {
     if (fi.files[0]) uploadFile(fi.files[0]);
     fi.value = '';
   });
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) uploadFile(f);
+  });
 }
 
 function showSheetPicker(sheets) {
   const picker = $sheetPicker();
   const list = $('sheet-list');
-  list.innerHTML = sheets.map(s =>
-    `<div class="sheet-option" onclick="selectSheet('${esc(s)}')">${esc(s)}</div>`
-  ).join('');
+  list.innerHTML = sheets.map((s, i) => {
+    _sheetNames[i] = s;
+    return `<div class="sheet-option" onclick="selectSheet(_sheetNames[${i}])">${esc(s)}</div>`;
+  }).join('');
   picker.classList.add('visible');
 }
+const _sheetNames = [];
 
 async function selectSheet(sheetName) {
   $sheetPicker().classList.remove('visible');
