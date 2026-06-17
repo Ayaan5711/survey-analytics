@@ -1,0 +1,140 @@
+from __future__ import annotations
+import base64
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+import pandas as pd
+from app.data.profiler import DatasetProfile
+from app.llm.client import llm
+from app.llm.prompts import chat_system_prompt, tool_definitions, synthesis_prompt
+from app.sandbox.runner import run_code, SandboxResult
+from app.tools.registry import dispatch_tool, ToolResult
+
+_MAX_STEPS = 4
+
+
+@dataclass
+class ChatResponse:
+    role: str
+    content: str
+    chart: dict | None          # {png_b64, title} or {plotly_json, title}
+    generated_code: str | None
+    follow_ups: list[str]
+    caveats: list[str]
+    tool_calls_made: list[str]
+
+
+class ChatAgent:
+    async def run(
+        self,
+        profile: DatasetProfile,
+        parquet_path: str,
+        message: str,
+        history: list[dict],
+    ) -> ChatResponse:
+        messages: list[dict] = [
+            {"role": "system", "content": chat_system_prompt(profile)},
+            *history,
+            {"role": "user", "content": message},
+        ]
+
+        df = pd.read_parquet(parquet_path)
+        tool_calls_made: list[str] = []
+        tool_summaries: list[str] = []
+        last_chart: dict | None = None
+        last_code: str | None = None
+        caveats: list[str] = []
+
+        for _step in range(_MAX_STEPS):
+            response = await llm._client.chat.completions.create(
+                model=llm.deployment_fallback,
+                messages=messages,
+                tools=tool_definitions(),
+                tool_choice="auto",
+                temperature=0.2,
+                max_tokens=800,
+            )
+            choice = response.choices[0]
+
+            if choice.finish_reason == "stop":
+                break
+
+            if choice.finish_reason == "tool_calls":
+                msg_dict = choice.message.model_dump(exclude_none=True)
+                messages.append(msg_dict)
+
+                for tc in choice.message.tool_calls:
+                    name = tc.function.name
+                    params = json.loads(tc.function.arguments)
+                    tool_calls_made.append(name)
+
+                    tool_result_str, chart, caveat, code = await self._execute(
+                        name, params, df, parquet_path
+                    )
+                    if chart:
+                        last_chart = chart
+                    if caveat:
+                        caveats.append(caveat)
+                    if code:
+                        last_code = code
+                    tool_summaries.append(tool_result_str)
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": tool_result_str[:2000],
+                    })
+
+        # Synthesis call
+        synth_msg = synthesis_prompt(message, tool_summaries)
+        raw = await llm.chat_completion(
+            messages=[{"role": "user", "content": synth_msg}],
+            use_fallback=False,
+            max_tokens=400,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+        try:
+            parsed = json.loads(raw)
+            narrative = parsed.get("narrative", raw)
+            follow_ups = parsed.get("follow_ups", [])[:3]
+        except (json.JSONDecodeError, AttributeError):
+            narrative = raw
+            follow_ups = []
+
+        return ChatResponse(
+            role="assistant",
+            content=narrative,
+            chart=last_chart,
+            generated_code=last_code,
+            follow_ups=follow_ups,
+            caveats=caveats,
+            tool_calls_made=tool_calls_made,
+        )
+
+    async def _execute(
+        self,
+        name: str,
+        params: dict,
+        df: pd.DataFrame,
+        parquet_path: str,
+    ) -> tuple[str, dict | None, str | None, str | None]:
+        """Returns (summary_str, chart_dict_or_None, caveat_or_None, code_or_None)."""
+        if name == "generate_code":
+            code = params["code"]
+            result: SandboxResult = run_code(code, parquet_path)
+            if not result.success:
+                return f"Code execution error: {result.error}", None, None, code
+            chart = None
+            if result.png_bytes:
+                chart = {"png_b64": base64.b64encode(result.png_bytes).decode(), "title": "Custom chart"}
+            elif result.plotly_json:
+                chart = {"plotly_json": result.plotly_json, "title": "Custom chart"}
+            return result.summary or "Code executed successfully.", chart, None, code
+
+        tr: ToolResult = dispatch_tool(df, name, params)
+        chart = None
+        if tr.png_bytes:
+            chart = {"png_b64": base64.b64encode(tr.png_bytes).decode(), "title": tr.summary}
+        table_str = json.dumps(tr.table)[:500] if tr.table else ""
+        return f"{tr.summary}. Data: {table_str}", chart, tr.caveat, None
