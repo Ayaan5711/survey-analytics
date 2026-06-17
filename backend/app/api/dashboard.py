@@ -47,7 +47,7 @@ async def get_dashboard(session_id: str, db: Session = Depends(get_db)) -> dict:
     # Narrative: serve from disk cache to avoid re-calling LLM on every GET
     narrative_path = session_dir / "narrative.txt"
     if narrative_path.exists():
-        narrative = narrative_path.read_text()
+        narrative = narrative_path.read_text(encoding="utf-8")
     else:
         prompt = dashboard_narrative_prompt(profile)
         narrative = await llm.chat_completion(
@@ -56,7 +56,7 @@ async def get_dashboard(session_id: str, db: Session = Depends(get_db)) -> dict:
             max_tokens=300,
             temperature=0.4,
         )
-        narrative_path.write_text(narrative)
+        narrative_path.write_text(narrative, encoding="utf-8")
 
     return {
         "session_id": session_id,

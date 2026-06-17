@@ -110,16 +110,24 @@ def pin_chart(
     body: PinRequest,
     db: Session = Depends(get_db),
 ) -> dict:
+    import base64
     record = db.get(SessionModel, session_id)
     if not record:
         raise HTTPException(status_code=404, detail="Session not found")
     pin = PinnedChart(
         session_id=session_id,
-        chart_path=f"pin_{session_id}_{len(record.pinned_charts)}",
+        chart_path="",
         title=body.title,
         source_message_id=body.source_message_id,
     )
     db.add(pin)
+    db.flush()  # populate pin.id before writing to disk
+
+    session_dir = Path(record.profile_path).parent
+    png_path = session_dir / f"{pin.id}.png"
+    png_path.write_bytes(base64.b64decode(body.png_b64))
+    pin.chart_path = str(png_path)
+
     db.commit()
     db.refresh(pin)
     return {"pin_id": pin.id, "title": pin.title}

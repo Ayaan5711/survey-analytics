@@ -55,58 +55,66 @@ async def generate_insights(
     session_id: str,
     profile: DatasetProfile,
     parquet_path: str,
-    db: DBSession,
+    db: DBSession | None = None,
 ) -> None:
-    # Clear existing insights for this session (idempotent re-run)
-    db.query(Insight).filter_by(session_id=session_id).delete()
-    db.commit()
-
+    from app.db.database import SessionLocal
+    _own_db = db is None
+    if _own_db:
+        db = SessionLocal()
     try:
-        df = pd.read_parquet(parquet_path)
-    except Exception as exc:
-        logger.error("Could not load parquet for insight generation: %s", exc)
-        return
+        # Clear existing insights for this session (idempotent re-run)
+        db.query(Insight).filter_by(session_id=session_id).delete()
+        db.commit()
 
-    candidates = _candidate_findings(profile, df)
-    if not candidates:
-        return
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception as exc:
+            logger.error("Could not load parquet for insight generation: %s", exc)
+            return
 
-    # One batched LLM call to phrase all findings
-    summaries = "\n".join(f"{i+1}. {f['summary']}" for i, f in enumerate(candidates))
-    prompt = (
-        f"You are a data analyst. Below are raw statistical findings from a survey dataset "
-        f'called "{profile.filename}" ({profile.row_count} rows).\n\n'
-        f"Raw findings:\n{summaries}\n\n"
-        f"For each finding, write a short title (5 words max) and one plain-English sentence summary. "
-        f"Respond with a JSON array:\n"
-        f'[{{"title": "...", "summary": "..."}}, ...]\n'
-        f"Include all {len(candidates)} findings in the same order."
-    )
+        candidates = _candidate_findings(profile, df)
+        if not candidates:
+            return
 
-    try:
-        raw = await llm.chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            use_fallback=False,
-            max_tokens=600,
-            temperature=0.3,
-            response_format={"type": "json_object"},
+        # One batched LLM call to phrase all findings
+        summaries = "\n".join(f"{i+1}. {f['summary']}" for i, f in enumerate(candidates))
+        prompt = (
+            f"You are a data analyst. Below are raw statistical findings from a survey dataset "
+            f'called "{profile.filename}" ({profile.row_count} rows).\n\n'
+            f"Raw findings:\n{summaries}\n\n"
+            f"For each finding, write a short title (5 words max) and one plain-English sentence summary. "
+            f"Respond with a JSON array:\n"
+            f'[{{"title": "...", "summary": "..."}}, ...]\n'
+            f"Include all {len(candidates)} findings in the same order."
         )
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            # model wrapped array in an object
-            parsed = next(iter(parsed.values())) if parsed else []
-    except Exception as exc:
-        logger.error("Batch insight LLM call failed: %s", exc)
-        parsed = [{"title": f"Finding {i+1}", "summary": c["summary"]} for i, c in enumerate(candidates)]
 
-    for rank, (candidate, phrased) in enumerate(zip(candidates, parsed), start=1):
-        insight = Insight(
-            session_id=session_id,
-            rank=rank,
-            title=phrased.get("title", f"Finding {rank}"),
-            summary=phrased.get("summary", candidate["summary"]),
-            supporting_tool_calls=[{"tool": candidate["tool"], "params": candidate["params"]}],
-        )
-        db.add(insight)
+        try:
+            raw = await llm.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                use_fallback=False,
+                max_tokens=600,
+                temperature=0.3,
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                # model wrapped array in an object
+                parsed = next(iter(parsed.values())) if parsed else []
+        except Exception as exc:
+            logger.error("Batch insight LLM call failed: %s", exc)
+            parsed = [{"title": f"Finding {i+1}", "summary": c["summary"]} for i, c in enumerate(candidates)]
 
-    db.commit()
+        for rank, (candidate, phrased) in enumerate(zip(candidates, parsed), start=1):
+            insight = Insight(
+                session_id=session_id,
+                rank=rank,
+                title=phrased.get("title", f"Finding {rank}"),
+                summary=phrased.get("summary", candidate["summary"]),
+                supporting_tool_calls=[{"tool": candidate["tool"], "params": candidate["params"]}],
+            )
+            db.add(insight)
+
+        db.commit()
+    finally:
+        if _own_db:
+            db.close()

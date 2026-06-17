@@ -1,7 +1,7 @@
 from __future__ import annotations
 import ast
 
-_ALLOWED_IMPORTS = {"pandas", "pd", "numpy", "np", "matplotlib", "plt", "seaborn", "plotly", "io", "math", "time"}
+_ALLOWED_IMPORTS = {"pandas", "pd", "numpy", "np", "matplotlib", "plt", "seaborn", "plotly", "math", "time"}
 _BLOCKED_NAMES = {"os", "sys", "open", "__import__", "eval", "exec", "compile",
                   "globals", "locals", "__builtins__", "breakpoint", "input"}
 

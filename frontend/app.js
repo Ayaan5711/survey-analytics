@@ -1,5 +1,25 @@
 'use strict';
 
+// ── Chart store (XSS-safe onclick) ────────────────────────────────────────
+const _charts = new Map();
+let _chartSeq = 0;
+
+function _storeChart(title, src) {
+  const id = ++_chartSeq;
+  _charts.set(id, { title, src });
+  return id;
+}
+
+function openCanvasById(id) {
+  const c = _charts.get(id);
+  if (c) openCanvas(c.title, c.src);
+}
+
+function pinChartById(id) {
+  const c = _charts.get(id);
+  if (c) pinChart(c.src, c.title);
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
   sessions: [],
@@ -310,14 +330,15 @@ function appendMessage(role, content, chart, followUps, caveats, code) {
   if (chart?.png_b64) {
     const src = `data:image/png;base64,${chart.png_b64}`;
     const title = chart.title || 'Chart';
+    const cid = _storeChart(title, src);
     chartHtml = `
-      <div class="message-chart" onclick="openCanvas('${title}', '${src}')">
+      <div class="message-chart" data-chart-id="${cid}">
         <img src="${src}" alt="${esc(title)}">
       </div>
       <div class="chart-actions">
-        <button onclick="openCanvas('${esc(title)}', '${src}')">Expand</button>
+        <button onclick="openCanvasById(${cid})">Expand</button>
         <button onclick="downloadPng('${src}', '${esc(title)}')">Download</button>
-        <button onclick="pinChart('${src}', '${esc(title)}')">Pin</button>
+        <button onclick="pinChartById(${cid})">Pin</button>
       </div>`;
   }
 
@@ -377,12 +398,16 @@ async function loadDashboard() {
 }
 
 function renderDashboard(area, dash, insights) {
-  const chartsHtml = (dash.charts || []).map(c => `
+  const chartsHtml = (dash.charts || []).map(c => {
+    const src = `data:image/png;base64,${c.png_b64}`;
+    const cid = _storeChart(c.title, src);
+    return `
     <div class="dashboard-chart-card">
       <div class="dashboard-chart-title">${esc(c.title)}</div>
-      <img src="data:image/png;base64,${c.png_b64}" alt="${esc(c.title)}"
-           onclick="openCanvas('${esc(c.title)}', 'data:image/png;base64,${c.png_b64}')" style="cursor:pointer">
-    </div>`).join('');
+      <img src="${src}" alt="${esc(c.title)}"
+           onclick="openCanvasById(${cid})" style="cursor:pointer">
+    </div>`;
+  }).join('');
 
   const insightsHtml = insights.length ? `
     <div class="insights-section">

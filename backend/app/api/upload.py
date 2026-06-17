@@ -74,11 +74,11 @@ async def upload_file(
     dashboard = await generate_dashboard(profile, quality, session_dir)
 
     # Cache narrative to avoid re-calling LLM on subsequent GET /dashboard requests
-    (session_dir / "narrative.txt").write_text(dashboard.narrative)
+    (session_dir / "narrative.txt").write_text(dashboard.narrative, encoding="utf-8")
 
     # Trigger insight generation in the background
     from app.insights.generator import generate_insights as _gen_insights
-    background_tasks.add_task(_gen_insights, record.id, profile, record.data_path, db)
+    background_tasks.add_task(_gen_insights, record.id, profile, record.data_path)
 
     return {
         "session_id": record.id,
@@ -127,7 +127,7 @@ async def upload_excel_with_sheet(
     dashboard = await generate_dashboard(profile, quality, session_dir)
 
     # Cache narrative to avoid re-calling LLM on subsequent GET /dashboard requests
-    (session_dir / "narrative.txt").write_text(dashboard.narrative)
+    (session_dir / "narrative.txt").write_text(dashboard.narrative, encoding="utf-8")
 
     return {
         "session_id": record.id,

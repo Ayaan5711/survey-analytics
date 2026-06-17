@@ -37,14 +37,14 @@ async def export_pdf(session_id: str, db: Session = Depends(get_db)) -> Response
     # Narrative: use cached or call LLM
     narrative_path = Path(record.profile_path).parent / "narrative.txt"
     if narrative_path.exists():
-        narrative = narrative_path.read_text()
+        narrative = narrative_path.read_text(encoding="utf-8")
     else:
         try:
             narrative = await llm.chat_completion(
                 messages=[{"role": "user", "content": dashboard_narrative_prompt(profile)}],
                 use_fallback=False, max_tokens=300, temperature=0.4,
             )
-            narrative_path.write_text(narrative)
+            narrative_path.write_text(narrative, encoding="utf-8")
         except Exception as exc:
             logger.error("Narrative LLM call failed for export: %s", exc)
             narrative = f"Dataset: {profile.filename}, {profile.row_count} rows."

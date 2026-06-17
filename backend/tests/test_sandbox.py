@@ -66,11 +66,11 @@ def test_run_code_basic(parquet_file):
 
 
 def test_run_code_produces_png(parquet_file):
+    # io is pre-injected into the sandbox namespace — no import needed
     code = """
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import io
 fig, ax = plt.subplots()
 ax.bar(df['B'], df['A'])
 buf = io.BytesIO()
