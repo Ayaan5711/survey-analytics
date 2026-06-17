@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.config import settings
 from app.db.database import create_tables
-from app.api import upload, sessions, dashboard
+from app.api import upload, sessions, dashboard, chat
 
 
 @asynccontextmanager
@@ -17,3 +17,4 @@ app = FastAPI(title="Survey Analytics", lifespan=lifespan)
 app.include_router(upload.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
