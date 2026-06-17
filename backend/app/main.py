@@ -1,9 +1,13 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.db.database import create_tables
 from app.api import upload, sessions, dashboard, chat, insights, compare, export
+
+_FRONTEND = Path(__file__).parent.parent.parent / "frontend"
 
 
 @asynccontextmanager
@@ -21,3 +25,6 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(insights.router, prefix="/api")
 app.include_router(compare.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
+
+if _FRONTEND.exists():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND), html=True), name="frontend")
