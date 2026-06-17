@@ -3,7 +3,7 @@ import logging
 import os
 from dataclasses import asdict
 from pathlib import Path
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from app.data.loader import get_excel_sheet_names, load_file
 from app.data.profiler import build_profile
@@ -26,6 +26,7 @@ def _data_dir() -> Path:
 async def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -74,6 +75,10 @@ async def upload_file(
 
     # Cache narrative to avoid re-calling LLM on subsequent GET /dashboard requests
     (session_dir / "narrative.txt").write_text(dashboard.narrative)
+
+    # Trigger insight generation in the background
+    from app.insights.generator import generate_insights as _gen_insights
+    background_tasks.add_task(_gen_insights, record.id, profile, record.data_path, db)
 
     return {
         "session_id": record.id,
