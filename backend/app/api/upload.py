@@ -72,6 +72,9 @@ async def upload_file(
 
     dashboard = await generate_dashboard(profile, quality, session_dir)
 
+    # Cache narrative to avoid re-calling LLM on subsequent GET /dashboard requests
+    (session_dir / "narrative.txt").write_text(dashboard.narrative)
+
     return {
         "session_id": record.id,
         "filename": file.filename,
@@ -117,6 +120,10 @@ async def upload_excel_with_sheet(
     db.commit()
 
     dashboard = await generate_dashboard(profile, quality, session_dir)
+
+    # Cache narrative to avoid re-calling LLM on subsequent GET /dashboard requests
+    (session_dir / "narrative.txt").write_text(dashboard.narrative)
+
     return {
         "session_id": record.id,
         "filename": record.filename,
