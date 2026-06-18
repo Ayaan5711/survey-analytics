@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import logging
+from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -48,25 +49,24 @@ async def chat(
         if m.get("role") in ("user", "assistant")
     ][-20:]
 
+    # Persist the user's message so it survives tab switches / reloads.
+    db.add(ChatMessage(session_id=session_id, role="user", content=body.message))
+    db.commit()
+
     try:
         response = await _agent.run(profile, record.data_path, body.message, safe_history)
     except Exception as exc:
         logger.error("Agent error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Analysis failed — try rephrasing your question")
 
-    chart_paths = None
-    if response.chart:
-        if "png_b64" in response.chart:
-            chart_paths = [{"type": "png", "title": response.chart.get("title", "")}]
-        elif "plotly_json" in response.chart:
-            chart_paths = [{"type": "plotly", "title": response.chart.get("title", "")}]
-
+    # Store the full chart payload (png_b64 / plotly_json + title) so it can be
+    # re-rendered when the chat history is reloaded.
     msg = ChatMessage(
         session_id=session_id,
         role="assistant",
         content=response.content,
         generated_code=response.generated_code,
-        chart_paths=chart_paths,
+        chart_paths=response.chart,
         follow_ups=response.follow_ups,
         caveats=response.caveats,
     )
@@ -91,16 +91,19 @@ def list_messages(session_id: str, db: Session = Depends(get_db)) -> list[dict]:
     record = db.get(SessionModel, session_id)
     if not record:
         raise HTTPException(status_code=404, detail="Session not found")
+    ordered = sorted(record.messages, key=lambda m: m.created_at or datetime.min)
     return [
         {
             "message_id": m.id,
             "role": m.role,
             "content": m.content,
+            "chart": m.chart_paths,
+            "generated_code": m.generated_code,
             "follow_ups": m.follow_ups,
             "caveats": m.caveats,
             "created_at": m.created_at.isoformat() if m.created_at else None,
         }
-        for m in record.messages
+        for m in ordered
     ]
 
 
@@ -138,14 +141,18 @@ def list_pins(session_id: str, db: Session = Depends(get_db)) -> list[dict]:
     record = db.get(SessionModel, session_id)
     if not record:
         raise HTTPException(status_code=404, detail="Session not found")
-    return [
-        {
+    pins = []
+    for p in record.pinned_charts:
+        png_b64 = None
+        if p.chart_path and Path(p.chart_path).exists():
+            png_b64 = base64.b64encode(Path(p.chart_path).read_bytes()).decode()
+        pins.append({
             "pin_id": p.id,
             "title": p.title,
+            "png_b64": png_b64,
             "created_at": p.created_at.isoformat() if p.created_at else None,
-        }
-        for p in record.pinned_charts
-    ]
+        })
+    return pins
 
 
 @router.delete("/sessions/{session_id}/pins/{pin_id}")

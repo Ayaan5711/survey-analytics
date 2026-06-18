@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -6,6 +7,11 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.db.database import create_tables
 from app.api import upload, sessions, dashboard, chat, insights, compare, export
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 _FRONTEND = Path(__file__).parent.parent.parent / "frontend"
 

@@ -43,8 +43,11 @@ def test_chat_persists_message(client, sample_csv_bytes):
     r = client.get(f"/api/sessions/{sid}/messages")
     assert r.status_code == 200
     msgs = r.json()
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "assistant"
+    # Both the user's message and the assistant's reply are now persisted,
+    # ordered chronologically (user first).
+    assert len(msgs) == 2
+    assert msgs[0]["role"] == "user"
+    assert msgs[1]["role"] == "assistant"
 
 
 def test_chat_session_not_found(client):

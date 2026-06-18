@@ -128,6 +128,7 @@ function buildShell() {
   </div>
 </div>
 <div id="upload-overlay">
+  <button id="btn-close-upload" onclick="closeUploadOverlay()" title="Back">×</button>
   <h1>Survey Analytics</h1>
   <p>Upload a CSV or Excel file to begin.</p>
   <div id="drop-zone">
@@ -182,8 +183,15 @@ async function selectSession(id) {
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
-function showUploadOverlay() { $uploadOverlay().style.display = 'flex'; }
+function showUploadOverlay() {
+  resetDropZone();                                   // clear any stale "Uploading…" spinner
+  const closeBtn = $('btn-close-upload');
+  // Only allow closing the overlay if there's an existing session to go back to.
+  if (closeBtn) closeBtn.style.display = state.activeSessionId ? 'block' : 'none';
+  $uploadOverlay().style.display = 'flex';
+}
 function hideUploadOverlay() { $uploadOverlay().style.display = 'none'; }
+function closeUploadOverlay() { if (state.activeSessionId) hideUploadOverlay(); }
 
 function bindUpload() {
   const dz = $('drop-zone');
@@ -289,7 +297,8 @@ async function loadMessages() {
   try {
     const data = await apiGet(`/sessions/${state.activeSessionId}/messages`);
     for (const m of data) {
-      appendMessage(m.role, m.content, null, m.follow_ups || [], m.caveats || []);
+      appendMessage(m.role, m.content, m.chart || null,
+                    m.follow_ups || [], m.caveats || [], m.generated_code || null);
       state.history.push({ role: m.role, content: m.content });
     }
   } catch { /* first session, no messages */ }
@@ -396,17 +405,19 @@ async function loadDashboard() {
   if (!area || !state.activeSessionId) return;
   area.innerHTML = '<div class="spinner" style="margin:40px auto;display:block"></div>';
   try {
-    const [dash, ins] = await Promise.all([
+    const [dash, ins, pins] = await Promise.all([
       apiGet(`/sessions/${state.activeSessionId}/dashboard`),
       apiGet(`/sessions/${state.activeSessionId}/insights`).catch(() => []),
+      apiGet(`/sessions/${state.activeSessionId}/pins`).catch(() => []),
     ]);
-    renderDashboard(area, dash, ins);
+    renderDashboard(area, dash, ins, pins);
   } catch (err) {
     area.innerHTML = `<p style="padding:20px;color:red">Failed to load dashboard: ${esc(err.message)}</p>`;
   }
 }
 
-function renderDashboard(area, dash, insights) {
+function renderDashboard(area, dash, insights, pins) {
+  pins = pins || [];
   const chartsHtml = (dash.charts || []).map(c => {
     const src = `data:image/png;base64,${c.png_b64}`;
     const cid = _storeChart(c.title, src);
@@ -417,6 +428,21 @@ function renderDashboard(area, dash, insights) {
            onclick="openCanvasById(${cid})" style="cursor:pointer">
     </div>`;
   }).join('');
+
+  const pinnedHtml = pins.filter(p => p.png_b64).map(p => {
+    const src = `data:image/png;base64,${p.png_b64}`;
+    const cid = _storeChart(p.title, src);
+    return `
+    <div class="dashboard-chart-card">
+      <div class="dashboard-chart-title">${esc(p.title || 'Pinned chart')}</div>
+      <img src="${src}" alt="${esc(p.title || '')}"
+           onclick="openCanvasById(${cid})" style="cursor:pointer">
+      <button onclick="unpinChart('${p.pin_id}')" style="margin-top:6px">Unpin</button>
+    </div>`;
+  }).join('');
+  const pinnedSection = pinnedHtml
+    ? `<h2 style="margin-top:24px">Pinned charts</h2><div class="dashboard-charts">${pinnedHtml}</div>`
+    : '';
 
   const insightsHtml = insights.length ? `
     <div class="insights-section">
@@ -436,8 +462,17 @@ function renderDashboard(area, dash, insights) {
     </div>
     ${dash.narrative ? `<p style="font-size:14px;line-height:1.7;margin-bottom:20px;max-width:700px">${esc(dash.narrative)}</p>` : ''}
     <div class="dashboard-charts">${chartsHtml}</div>
+    ${pinnedSection}
     ${insightsHtml}
     <button class="export-btn" onclick="exportPdf()">Export PDF Report</button>`;
+}
+
+async function unpinChart(pinId) {
+  if (!state.activeSessionId) return;
+  try {
+    await apiDelete(`/sessions/${state.activeSessionId}/pins/${pinId}`);
+    await loadDashboard();
+  } catch (err) { alert(`Unpin failed: ${err.message}`); }
 }
 
 async function exportPdf() {
