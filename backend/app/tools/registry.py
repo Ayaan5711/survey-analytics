@@ -111,14 +111,25 @@ def distribution(df: pd.DataFrame, column: str) -> ToolResult:
 
 def crosstab(df: pd.DataFrame, row_col: str, col_col: str, normalize: bool = False) -> ToolResult:
     ct = pd.crosstab(df[row_col], df[col_col], normalize="index" if normalize else False)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    im = ax.imshow(ct.values, aspect="auto", cmap="Greys")
-    ax.set_xticks(range(len(ct.columns)))
-    ax.set_xticklabels([str(c) for c in ct.columns], rotation=45, ha="right")
-    ax.set_yticks(range(len(ct.index)))
-    ax.set_yticklabels([str(r) for r in ct.index])
+    # Render as a grouped bar chart (far more legible than a grayscale heatmap):
+    # one cluster per row category, one bar per column category in greyscale shades.
+    fig, ax = plt.subplots(figsize=(9, 5))
+    n_cols = len(ct.columns)
+    n_rows = len(ct.index)
+    x = np.arange(n_rows)
+    width = 0.8 / max(n_cols, 1)
+    shades = [str(v) for v in np.linspace(0.0, 0.7, n_cols)]  # black→light grey
+    for j, col in enumerate(ct.columns):
+        ax.bar(x + j * width, ct[col].values, width,
+               label=str(col), color=shades[j], edgecolor="black", linewidth=0.5)
+    ax.set_xticks(x + width * (n_cols - 1) / 2)
+    ax.set_xticklabels([str(r) for r in ct.index], rotation=30, ha="right")
+    ax.set_xlabel(row_col)
+    ax.set_ylabel("Proportion" if normalize else "Count")
     ax.set_title(f"{row_col} × {col_col}", fontsize=12)
-    plt.colorbar(im, ax=ax)
+    ax.legend(title=col_col, fontsize=8)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
     png = _fig_to_bytes(fig)
     table = ct.reset_index().rename(columns=str).replace({np.nan: None}).to_dict(orient="records")
     summary = f"Cross-tab of {row_col} by {col_col}: {len(ct.index)} rows × {len(ct.columns)} cols"
