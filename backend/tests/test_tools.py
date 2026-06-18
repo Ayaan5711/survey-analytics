@@ -14,6 +14,69 @@ def survey_df():
     })
 
 
+@pytest.fixture
+def inflation_df():
+    return pd.DataFrame({
+        "City": ["Delhi", "Delhi", "Mumbai", "Mumbai", "Mumbai", "Pune"],
+        "Gender": ["M", "F", "M", "F", "M", "F"],
+        "Income": ["Low", "High", "Low", "High", "Low", "High"],
+        "FoodExpectation": [
+            "Price increase", "No change", "Price increase",
+            "Price increase", "Decline", "No change",
+        ],
+        "Rate1Yr": [16, 8, 18, 20, 5, 10],
+    })
+
+
+def test_rank_groups_by_value_picks_top(inflation_df):
+    result = dispatch_tool(inflation_df, "rank_groups_by_value", {
+        "group_col": "City", "target_col": "FoodExpectation", "target_value": "Price increase",
+    })
+    assert result.tool_name == "rank_groups_by_value"
+    # Mumbai: 2/3 = 66.7%, Delhi: 1/2 = 50%, Pune: 0/1 = 0% → Mumbai is top
+    assert "Mumbai" in result.summary
+    assert isinstance(result.table, list)
+    assert result.table[0]["City"] == "Mumbai"
+    assert result.table[0]["pct"] == pytest.approx(66.7, abs=0.1)
+
+
+def test_filter_profile_subsets_and_profiles(inflation_df):
+    result = dispatch_tool(inflation_df, "filter_profile", {
+        "filter_col": "Rate1Yr", "filter_value": "16", "operator": "gte",
+    })
+    assert result.tool_name == "filter_profile"
+    # Rate1Yr >= 16 → 3 of 6 rows
+    assert "3 of 6" in result.summary
+    cols = {row["column"] for row in result.table}
+    assert "City" in cols and "Gender" in cols
+
+
+def test_list_filtered_values_returns_raw_rows(inflation_df):
+    result = dispatch_tool(inflation_df, "list_filtered_values", {
+        "filter_col": "Rate1Yr", "filter_value": "16", "operator": "gte",
+        "value_cols": ["City", "FoodExpectation"],
+    })
+    assert result.tool_name == "list_filtered_values"
+    assert len(result.table) == 3
+    assert set(result.table[0].keys()) == {"City", "FoodExpectation"}
+
+
+def test_pivot_table_two_dimensions(inflation_df):
+    result = dispatch_tool(inflation_df, "pivot_table", {
+        "index_col": "City", "column_col": "Income", "value_col": "Rate1Yr",
+    })
+    assert result.tool_name == "pivot_table"
+    assert isinstance(result.table, list) and result.table
+    assert isinstance(result.png_bytes, bytes)
+
+
+def test_pivot_table_counts_when_no_numeric_value(inflation_df):
+    result = dispatch_tool(inflation_df, "pivot_table", {
+        "index_col": "City", "column_col": "FoodExpectation",
+    })
+    assert result.png_bytes and result.table
+
+
 def test_tool_names_list():
     assert "segment_stats" in TOOL_NAMES
     assert "distribution" in TOOL_NAMES
