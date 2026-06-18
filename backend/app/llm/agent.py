@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 from app.data.profiler import DatasetProfile
 from app.llm.client import llm
-from app.llm.prompts import chat_system_prompt, tool_definitions, synthesis_prompt
+from app.llm.prompts import chat_system_prompt, tool_definitions, synthesis_prompt, code_gen_prompt
 from app.sandbox.runner import run_code, SandboxResult
 from app.tools.registry import dispatch_tool, ToolResult
 
@@ -22,6 +22,8 @@ class ChatResponse:
     follow_ups: list[str]
     caveats: list[str]
     tool_calls_made: list[str]
+    table: list | dict | None = None     # deterministic facts from the last tool
+    table_title: str | None = None
 
 
 class ChatAgent:
@@ -31,9 +33,17 @@ class ChatAgent:
         parquet_path: str,
         message: str,
         history: list[dict],
+        compare_diff: str | None = None,
     ) -> ChatResponse:
+        system = chat_system_prompt(profile)
+        if compare_diff:
+            system += (
+                "\n\nA comparison dataset is active. Differences between the base and "
+                "comparison datasets:\n" + compare_diff +
+                "\nWhen the user asks what changed, ground your answer in these deltas."
+            )
         messages: list[dict] = [
-            {"role": "system", "content": chat_system_prompt(profile)},
+            {"role": "system", "content": system},
             *history,
             {"role": "user", "content": message},
         ]
@@ -43,6 +53,8 @@ class ChatAgent:
         tool_summaries: list[str] = []
         last_chart: dict | None = None
         last_code: str | None = None
+        last_table: list | dict | None = None
+        last_table_title: str | None = None
         caveats: list[str] = []
 
         for _step in range(_MAX_STEPS):
@@ -68,21 +80,22 @@ class ChatAgent:
                     params = json.loads(tc.function.arguments)
                     tool_calls_made.append(name)
 
-                    tool_result_str, chart, caveat, code = await self._execute(
-                        name, params, df, parquet_path
-                    )
-                    if chart:
-                        last_chart = chart
-                    if caveat:
-                        caveats.append(caveat)
-                    if code:
-                        last_code = code
-                    tool_summaries.append(tool_result_str)
+                    result = await self._execute(name, params, df, parquet_path, profile, message)
+                    if result.chart:
+                        last_chart = result.chart
+                    if result.caveat:
+                        caveats.append(result.caveat)
+                    if result.code:
+                        last_code = result.code
+                    if result.table is not None:
+                        last_table = result.table
+                        last_table_title = result.table_title
+                    tool_summaries.append(result.summary)
 
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": tool_result_str[:2000],
+                        "content": result.summary[:2000],
                     })
 
         # Synthesis call
@@ -110,7 +123,18 @@ class ChatAgent:
             follow_ups=follow_ups,
             caveats=caveats,
             tool_calls_made=tool_calls_made,
+            table=last_table,
+            table_title=last_table_title,
         )
+
+    @dataclass
+    class _ExecResult:
+        summary: str
+        chart: dict | None = None
+        caveat: str | None = None
+        code: str | None = None
+        table: list | dict | None = None
+        table_title: str | None = None
 
     async def _execute(
         self,
@@ -118,23 +142,70 @@ class ChatAgent:
         params: dict,
         df: pd.DataFrame,
         parquet_path: str,
-    ) -> tuple[str, dict | None, str | None, str | None]:
-        """Returns (summary_str, chart_dict_or_None, caveat_or_None, code_or_None)."""
+        profile: DatasetProfile,
+        message: str,
+    ) -> "ChatAgent._ExecResult":
         if name == "generate_code":
-            code = params["code"]
-            result: SandboxResult = run_code(code, parquet_path)
-            if not result.success:
-                return f"Code execution error: {result.error}", None, None, code
-            chart = None
-            if result.png_bytes:
-                chart = {"png_b64": base64.b64encode(result.png_bytes).decode(), "title": "Custom chart"}
-            elif result.plotly_json:
-                chart = {"plotly_json": result.plotly_json, "title": "Custom chart"}
-            return result.summary or "Code executed successfully.", chart, None, code
+            code = params.get("code", "")
+            result = run_code(code, parquet_path)
+            chart = self._chart_from_sandbox(result)
+            # Fix-and-retry once with the primary model if the first attempt
+            # failed or produced no chart at all.
+            if not result.success or chart is None:
+                error = result.error or "No chart was produced (result_png was never set)."
+                fixed = await llm.chat_completion(
+                    messages=[{"role": "user",
+                               "content": code_gen_prompt(message, profile, error)}],
+                    use_fallback=False,
+                    max_tokens=900,
+                    temperature=0.1,
+                )
+                fixed_code = _strip_code_fences(fixed)
+                retry = run_code(fixed_code, parquet_path)
+                retry_chart = self._chart_from_sandbox(retry)
+                if retry.success and retry_chart is not None:
+                    return self._ExecResult(
+                        summary=retry.summary or "Custom chart generated.",
+                        chart=retry_chart, code=fixed_code)
+                # Both attempts failed — surface the latest code + a clear note.
+                return self._ExecResult(
+                    summary=f"Could not render this chart automatically ({retry.error or error}).",
+                    code=fixed_code or code)
+            return self._ExecResult(summary=result.summary or "Custom chart generated.",
+                                    chart=chart, code=code)
 
         tr: ToolResult = dispatch_tool(df, name, params)
         chart = None
         if tr.png_bytes:
             chart = {"png_b64": base64.b64encode(tr.png_bytes).decode(), "title": tr.summary}
         table_str = json.dumps(tr.table)[:500] if tr.table else ""
-        return f"{tr.summary}. Data: {table_str}", chart, tr.caveat, None
+        return self._ExecResult(
+            summary=f"{tr.summary}. Data: {table_str}",
+            chart=chart,
+            caveat=tr.caveat,
+            table=tr.table,
+            table_title=tr.summary,
+        )
+
+    @staticmethod
+    def _chart_from_sandbox(result: SandboxResult) -> dict | None:
+        if not result.success:
+            return None
+        if result.png_bytes:
+            return {"png_b64": base64.b64encode(result.png_bytes).decode(), "title": "Custom chart"}
+        if result.plotly_json:
+            return {"plotly_json": result.plotly_json, "title": "Custom chart"}
+        return None
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove ```python ... ``` fences the model may add despite instructions."""
+    t = text.strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        t = "\n".join(lines)
+    return t.strip()

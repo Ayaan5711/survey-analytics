@@ -89,6 +89,14 @@ def tool_definitions() -> list[dict]:
             }, "required": ["column"]},
         }},
         {"type": "function", "function": {
+            "name": "pie_chart",
+            "description": "Show the share/proportion breakdown of a single categorical column as a pie chart. Use this whenever the user asks for a pie chart or a 'share of' / 'proportion of' a category.",
+            "parameters": {"type": "object", "properties": {
+                "column": {"type": "string", "description": "Categorical column to break down"},
+                "top_n": {"type": "integer", "description": "Max slices before grouping the rest into 'Other'", "default": 8},
+            }, "required": ["column"]},
+        }},
+        {"type": "function", "function": {
             "name": "crosstab",
             "description": "Cross-tabulate two categorical columns. Produces a grouped bar chart.",
             "parameters": {"type": "object", "properties": {
@@ -121,6 +129,33 @@ def tool_definitions() -> list[dict]:
             }, "required": ["code"]},
         }},
     ]
+
+
+def code_gen_prompt(user_message: str, profile: "DatasetProfile", error: str | None = None) -> str:
+    """Prompt for the primary model to (re)write a chart's matplotlib code.
+
+    The sandbox exposes df, pd, np, plt, io and captures result_png / result_summary.
+    """
+    base = f"""You write Python (pandas + matplotlib) for a sandboxed analytics tool.
+
+Dataset: "{profile.filename}" — {profile.row_count} rows.
+Columns:
+{_profile_summary(profile)}
+
+User request: "{user_message}"
+
+Write code that builds the requested chart. Hard requirements:
+- A DataFrame `df` and the modules `pd`, `np`, `plt`, `io` are already available. Do NOT import or read any files.
+- Render exactly one matplotlib figure.
+- You MUST save it to PNG bytes and assign them to `result_png`, e.g.:
+      buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=100, bbox_inches="tight"); result_png = buf.getvalue()
+- NEVER call plt.show(). Set `result_summary` to a one-sentence factual description.
+- Use the color "#2563eb" for the primary series to match the UI.
+
+Return ONLY the Python code, no markdown fences, no explanation."""
+    if error:
+        base += f"\n\nThe previous attempt failed with:\n{error}\nFix the code and return the full corrected script."
+    return base
 
 
 def synthesis_prompt(user_message: str, tool_summaries: list[str]) -> str:

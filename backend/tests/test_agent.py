@@ -117,3 +117,44 @@ async def test_agent_chart_in_response(profile_and_parquet):
     assert result.chart is not None
     assert "png_b64" in result.chart
     base64.b64decode(result.chart["png_b64"])
+    # The deterministic table from the tool is surfaced on the response.
+    assert result.table is not None
+    assert isinstance(result.table, list) and result.table
+
+
+@pytest.mark.asyncio
+async def test_agent_code_gen_retries_with_primary_on_failure(profile_and_parquet):
+    """A failed/empty generate_code attempt triggers one primary-model retry."""
+    profile, parquet_path = profile_and_parquet
+    agent = ChatAgent()
+
+    bad_code = "this is not valid python ("
+    good_code = (
+        "fig, ax = plt.subplots()\n"
+        "df['Satisfaction'].plot(kind='hist', ax=ax)\n"
+        "buf = io.BytesIO(); fig.savefig(buf, format='png'); result_png = buf.getvalue()\n"
+        "result_summary = 'ok'"
+    )
+    tool_resp = _mock_tool_call_response("generate_code", {"code": bad_code})
+    stop_resp = _mock_stop_response()
+    synthesis_json = json.dumps({"narrative": "Done.", "follow_ups": []})
+
+    call_n = 0
+    async def fake_create(**kwargs):
+        nonlocal call_n
+        call_n += 1
+        return tool_resp if call_n == 1 else stop_resp
+
+    # chat_completion is used for both the code-gen retry and synthesis.
+    async def fake_completion(messages, **kwargs):
+        content = messages[0]["content"]
+        if "You write Python" in content:   # code_gen_prompt
+            return good_code
+        return synthesis_json
+
+    with patch("app.llm.agent.llm._client.chat.completions.create", new=AsyncMock(side_effect=fake_create)), \
+         patch("app.llm.agent.llm.chat_completion", new=AsyncMock(side_effect=fake_completion)):
+        result = await agent.run(profile, parquet_path, "draw something custom", [])
+
+    assert result.chart is not None and "png_b64" in result.chart
+    assert result.generated_code == good_code

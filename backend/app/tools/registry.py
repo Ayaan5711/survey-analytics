@@ -19,7 +19,7 @@ class ToolResult:
     caveat: str | None = None
 
 
-TOOL_NAMES = ["segment_stats", "distribution", "crosstab", "anomalies", "threshold_count"]
+TOOL_NAMES = ["segment_stats", "distribution", "pie_chart", "crosstab", "anomalies", "threshold_count"]
 
 _CAVEAT_MIN_N = 30
 
@@ -114,6 +114,40 @@ def distribution(df: pd.DataFrame, column: str) -> ToolResult:
                       summary=summary, table=table, png_bytes=png, caveat=caveat)
 
 
+def pie_chart(df: pd.DataFrame, column: str, top_n: int = 8) -> ToolResult:
+    """Pie/share breakdown of a categorical column's value counts."""
+    series = df[column].dropna().astype(str)
+    counts = series.value_counts()
+    if len(counts) > top_n:
+        top = counts.head(top_n)
+        other = counts.iloc[top_n:].sum()
+        labels = list(top.index) + ["Other"]
+        values = list(top.values) + [int(other)]
+    else:
+        labels = list(counts.index)
+        values = list(counts.values)
+
+    cmap = plt.get_cmap("Blues")
+    colors = [cmap(v) for v in np.linspace(0.4, 0.9, len(values))]
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.pie(values, labels=labels, autopct="%1.1f%%", colors=colors,
+           wedgeprops={"edgecolor": "white", "linewidth": 1},
+           textprops={"fontsize": 9})
+    ax.set_title(f"{column} — share of responses", fontsize=12)
+    ax.axis("equal")
+    png = _fig_to_bytes(fig)
+
+    total = int(sum(values))
+    table = [{"value": l, "count": int(v), "pct": round(v / total * 100, 1) if total else 0}
+             for l, v in zip(labels, values)]
+    top_label = labels[0] if labels else "N/A"
+    summary = (f"{column}: '{top_label}' is the largest share "
+               f"({table[0]['pct']}% of {total} responses)" if table else f"{column}: no data")
+    caveat = f"{column} has {len(series)} non-null values." if len(series) < _CAVEAT_MIN_N else None
+    return ToolResult(tool_name="pie_chart", params={"column": column},
+                      summary=summary, table=table, png_bytes=png, caveat=caveat)
+
+
 def crosstab(df: pd.DataFrame, row_col: str, col_col: str, normalize: bool = False) -> ToolResult:
     ct = pd.crosstab(df[row_col], df[col_col], normalize="index" if normalize else False)
     # Render as a grouped bar chart (far more legible than a grayscale heatmap):
@@ -202,6 +236,7 @@ def threshold_count(df: pd.DataFrame, column: str, threshold: float, operator: s
 _DISPATCH = {
     "segment_stats": segment_stats,
     "distribution": distribution,
+    "pie_chart": pie_chart,
     "crosstab": crosstab,
     "anomalies": anomalies,
     "threshold_count": threshold_count,

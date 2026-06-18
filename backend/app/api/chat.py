@@ -19,6 +19,7 @@ _agent = ChatAgent()
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
+    compare_session_id: str | None = None
 
 
 class PinRequest(BaseModel):
@@ -53,20 +54,30 @@ async def chat(
     db.add(ChatMessage(session_id=session_id, role="user", content=body.message))
     db.commit()
 
+    # Optional comparison context: feed a textual diff summary to the agent.
+    compare_diff = None
+    if body.compare_session_id:
+        compare_diff = _build_compare_summary(db, session_id, body.compare_session_id)
+
     try:
-        response = await _agent.run(profile, record.data_path, body.message, safe_history)
+        response = await _agent.run(
+            profile, record.data_path, body.message, safe_history, compare_diff=compare_diff
+        )
     except Exception as exc:
         logger.error("Agent error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Analysis failed — try rephrasing your question")
 
     # Store the full chart payload (png_b64 / plotly_json + title) so it can be
     # re-rendered when the chat history is reloaded.
+    table_payload = {"rows": response.table, "title": response.table_title} if response.table else None
+
     msg = ChatMessage(
         session_id=session_id,
         role="assistant",
         content=response.content,
         generated_code=response.generated_code,
         chart_paths=response.chart,
+        data_table=table_payload,
         follow_ups=response.follow_ups,
         caveats=response.caveats,
     )
@@ -80,10 +91,39 @@ async def chat(
         "content": response.content,
         "chart": response.chart,
         "generated_code": response.generated_code,
+        "table": table_payload,
         "follow_ups": response.follow_ups,
         "caveats": response.caveats,
         "tool_calls_made": response.tool_calls_made,
     }
+
+
+def _build_compare_summary(db: Session, base_id: str, compare_id: str) -> str | None:
+    """Compute (and reuse) a textual diff summary between two sessions for the agent."""
+    from app.compare.engine import compare_profiles
+    base_rec = db.get(SessionModel, base_id)
+    cmp_rec = db.get(SessionModel, compare_id)
+    if not base_rec or not cmp_rec or not base_rec.profile_path or not cmp_rec.profile_path:
+        return None
+    if not Path(base_rec.profile_path).exists() or not Path(cmp_rec.profile_path).exists():
+        return None
+    base_p = load_profile(Path(base_rec.profile_path))
+    cmp_p = load_profile(Path(cmp_rec.profile_path))
+    diff = compare_profiles(base_p, cmp_p)
+    lines = [
+        f"Base '{diff.base_filename}' ({diff.base_row_count} rows) vs "
+        f"compare '{diff.compare_filename}' ({diff.compare_row_count} rows); "
+        f"row delta {diff.row_count_delta:+d}.",
+    ]
+    for d in diff.column_diffs:
+        if "mean_delta" in d:
+            lines.append(f"- {d['column']}: mean {d['base_mean']} → {d['compare_mean']} "
+                         f"(Δ {d['mean_delta']:+})")
+    if diff.only_in_base:
+        lines.append(f"- columns only in base: {', '.join(diff.only_in_base)}")
+    if diff.only_in_compare:
+        lines.append(f"- columns only in compare: {', '.join(diff.only_in_compare)}")
+    return "\n".join(lines)
 
 
 @router.get("/sessions/{session_id}/messages")
@@ -99,6 +139,7 @@ def list_messages(session_id: str, db: Session = Depends(get_db)) -> list[dict]:
             "content": m.content,
             "chart": m.chart_paths,
             "generated_code": m.generated_code,
+            "table": m.data_table,
             "follow_ups": m.follow_ups,
             "caveats": m.caveats,
             "created_at": m.created_at.isoformat() if m.created_at else None,

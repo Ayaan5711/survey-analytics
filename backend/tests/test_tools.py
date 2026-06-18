@@ -17,9 +17,28 @@ def survey_df():
 def test_tool_names_list():
     assert "segment_stats" in TOOL_NAMES
     assert "distribution" in TOOL_NAMES
+    assert "pie_chart" in TOOL_NAMES
     assert "crosstab" in TOOL_NAMES
     assert "anomalies" in TOOL_NAMES
     assert "threshold_count" in TOOL_NAMES
+
+
+def test_pie_chart_returns_shares(survey_df):
+    result = dispatch_tool(survey_df, "pie_chart", {"column": "Department"})
+    assert isinstance(result, ToolResult)
+    assert result.tool_name == "pie_chart"
+    assert isinstance(result.png_bytes, bytes) and len(result.png_bytes) > 0
+    assert isinstance(result.table, list) and result.table
+    row = result.table[0]
+    assert {"value", "count", "pct"} <= set(row)
+    # percentages should sum to ~100
+    assert abs(sum(r["pct"] for r in result.table) - 100) < 1.0
+
+
+def test_pie_chart_groups_into_other(survey_df):
+    result = dispatch_tool(survey_df, "pie_chart", {"column": "Department", "top_n": 1})
+    labels = [r["value"] for r in result.table]
+    assert "Other" in labels
 
 
 def test_segment_stats_returns_tool_result(survey_df):
