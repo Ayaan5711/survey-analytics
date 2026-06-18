@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from app.data.profiler import DatasetProfile
 
 # Shared accent — keeps dashboard charts consistent with the UI.
-_ACCENT = "#4f46e5"
+_ACCENT = "#2563eb"
 
 
 @dataclass

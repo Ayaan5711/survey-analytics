@@ -2,19 +2,20 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Neutral surfaces & ink */
-  --bg:        #f7f8fa;   /* app background */
+  /* Light, professional neutrals — soft cool grays with crisp white surfaces */
+  --bg:        #fbfcfd;   /* app background */
   --surface:   #ffffff;   /* cards, panels */
-  --surface-2: #f1f3f6;   /* subtle fills, assistant bubble */
-  --border:    #e6e8ec;   /* hairline borders */
-  --border-strong: #d4d8df;
-  --ink:       #16181d;   /* primary text */
-  --ink-muted: #6b7280;   /* secondary text */
+  --surface-2: #f4f6f8;   /* subtle fills, assistant bubble */
+  --border:    #eaecf0;   /* hairline borders */
+  --border-strong: #d7dbe0;
+  --ink:       #1c2127;   /* primary text */
+  --ink-muted: #667085;   /* secondary text */
 
-  /* One calm accent (indigo) — used sparingly for actions & emphasis */
-  --accent:        #4f46e5;
-  --accent-hover:  #4338ca;
-  --accent-soft:   #eef0fe;
+  /* One refined accent (professional blue) — used sparingly */
+  --accent:        #2563eb;
+  --accent-hover:  #1d4ed8;
+  --accent-soft:   #eef4ff;
+  --accent-border: #d6e4ff;
   --accent-ink:    #ffffff;
 
   --font: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -22,9 +23,10 @@
 
   --radius:    10px;
   --radius-sm: 7px;
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
-  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
-  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+  /* Very subtle, soft shadows for a clean professional feel */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 2px 8px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 12px 28px rgba(16, 24, 40, 0.10);
 
   --sidebar-w: 240px;
   --canvas-w: 400px;
@@ -177,17 +179,18 @@ body {
 .show-code-btn:hover { background: var(--surface-2); border-color: var(--ink-muted); }
 .follow-ups { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .follow-up-chip {
-  padding: 6px 14px; border: 1px solid var(--accent-soft);
+  padding: 6px 14px; border: 1px solid var(--accent-border);
   border-radius: 999px;
   font-size: 12px; cursor: pointer; background: var(--accent-soft); color: var(--accent);
-  font-family: var(--font); transition: background 0.12s;
+  font-family: var(--font); transition: background 0.12s, border-color 0.12s;
 }
-.follow-up-chip:hover { background: #e0e3fd; }
+.follow-up-chip:hover { background: #e0ecff; border-color: var(--accent); }
 .caveats { font-size: 11px; color: var(--ink-muted); margin-top: 8px; font-style: italic; }
 .show-code-btn { margin-top: 8px; }
 .code-block {
   display: none; margin-top: 8px;
-  background: #1b1d23; color: #e6e8ec; border-radius: var(--radius-sm);
+  background: var(--surface-2); color: #334155; border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 14px; font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-all; overflow-x: auto;
 }

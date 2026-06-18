@@ -24,9 +24,9 @@ TOOL_NAMES = ["segment_stats", "distribution", "crosstab", "anomalies", "thresho
 _CAVEAT_MIN_N = 30
 
 # Shared palette — keeps generated charts consistent with the UI accent.
-_ACCENT = "#4f46e5"
-_ACCENT_LIGHT = "#a5b4fc"
-_MUTED = "#d4d8df"
+_ACCENT = "#2563eb"
+_ACCENT_LIGHT = "#bfd4fe"
+_MUTED = "#d7dbe0"
 
 
 def _fig_to_bytes(fig) -> bytes:
