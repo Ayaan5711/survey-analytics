@@ -58,11 +58,17 @@ Column statistics:
 Available columns: {", ".join(profile.columns.keys())}
 
 When the user asks a question:
-1. Use one of the provided tools to analyse the data.
-2. For open-ended questions, chain up to 4 tool calls before synthesising.
-3. Use generate_code only for custom/novel analyses no tool covers.
-4. Always be specific — mention column names and numbers in your answers.
-5. Never fabricate data values."""
+1. Use one of the provided tools to analyse the data — strongly prefer a tool
+   that produces a chart so the answer is always backed by a visualization.
+2. Default to visualizing: for almost every question, call at least one
+   chart-producing tool (segment_stats, distribution, crosstab, anomalies,
+   threshold_count) rather than answering from the profile alone. Only skip a
+   chart when the user explicitly asks for a single number or a yes/no answer.
+3. For open-ended questions, chain up to 4 tool calls before synthesising, and
+   include the most illustrative chart.
+4. Use generate_code for custom/novel charts no built-in tool covers.
+5. Always be specific — mention column names and numbers in your answers.
+6. Never fabricate data values."""
 
 
 def tool_definitions() -> list[dict]:
@@ -84,7 +90,7 @@ def tool_definitions() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "crosstab",
-            "description": "Cross-tabulate two categorical columns. Produces a heatmap.",
+            "description": "Cross-tabulate two categorical columns. Produces a grouped bar chart.",
             "parameters": {"type": "object", "properties": {
                 "row_col": {"type": "string"},
                 "col_col": {"type": "string"},

@@ -23,6 +23,11 @@ TOOL_NAMES = ["segment_stats", "distribution", "crosstab", "anomalies", "thresho
 
 _CAVEAT_MIN_N = 30
 
+# Shared palette — keeps generated charts consistent with the UI accent.
+_ACCENT = "#2563eb"
+_ACCENT_LIGHT = "#bfd4fe"
+_MUTED = "#d7dbe0"
+
 
 def _fig_to_bytes(fig) -> bytes:
     buf = io.BytesIO()
@@ -34,7 +39,7 @@ def _fig_to_bytes(fig) -> bytes:
 
 
 def _black_bar(ax, labels, values, xlabel="", ylabel="", title=""):
-    ax.bar([str(l) for l in labels], values, color="black")
+    ax.bar([str(l) for l in labels], values, color=_ACCENT)
     ax.set_title(title, fontsize=12)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -86,7 +91,7 @@ def distribution(df: pd.DataFrame, column: str) -> ToolResult:
     fig, ax = plt.subplots(figsize=(7, 4))
 
     if pd.api.types.is_numeric_dtype(series):
-        ax.hist(series, bins=min(20, series.nunique()), color="black", edgecolor="white")
+        ax.hist(series, bins=min(20, series.nunique()), color=_ACCENT, edgecolor="white")
         ax.set_title(f"{column} — distribution", fontsize=12)
         ax.set_xlabel(column)
         ax.set_ylabel("Frequency")
@@ -118,10 +123,11 @@ def crosstab(df: pd.DataFrame, row_col: str, col_col: str, normalize: bool = Fal
     n_rows = len(ct.index)
     x = np.arange(n_rows)
     width = 0.8 / max(n_cols, 1)
-    shades = [str(v) for v in np.linspace(0.0, 0.7, n_cols)]  # black→light grey
+    cmap = plt.get_cmap("viridis")
+    colors = [cmap(v) for v in np.linspace(0.15, 0.85, max(n_cols, 1))]
     for j, col in enumerate(ct.columns):
         ax.bar(x + j * width, ct[col].values, width,
-               label=str(col), color=shades[j], edgecolor="black", linewidth=0.5)
+               label=str(col), color=colors[j], edgecolor="white", linewidth=0.5)
     ax.set_xticks(x + width * (n_cols - 1) / 2)
     ax.set_xticklabels([str(r) for r in ct.index], rotation=30, ha="right")
     ax.set_xlabel(row_col)
@@ -146,8 +152,8 @@ def anomalies(df: pd.DataFrame, column: str) -> ToolResult:
 
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.boxplot(series, vert=False, patch_artist=True,
-               boxprops={"facecolor": "white", "edgecolor": "black"},
-               medianprops={"color": "black"}, flierprops={"marker": "o", "color": "black"})
+               boxprops={"facecolor": _ACCENT_LIGHT, "edgecolor": _ACCENT},
+               medianprops={"color": _ACCENT}, flierprops={"marker": "o", "markeredgecolor": _ACCENT})
     ax.set_title(f"{column} — box plot (IQR outliers)", fontsize=12)
     ax.set_xlabel(column)
     for spine in ["top", "right"]:
@@ -180,7 +186,7 @@ def threshold_count(df: pd.DataFrame, column: str, threshold: float, operator: s
     summary = f"{count} of {total} rows ({pct}%) have {column} {op_label} {threshold}"
 
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.bar(["Meets threshold", "Does not"], [count, total - count], color=["black", "#cccccc"])
+    ax.bar(["Meets threshold", "Does not"], [count, total - count], color=[_ACCENT, _MUTED])
     ax.set_title(f"{column} {op_label} {threshold}", fontsize=12)
     ax.set_ylabel("Count")
     for spine in ["top", "right"]:
