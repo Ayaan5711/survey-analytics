@@ -21,7 +21,21 @@ def _mock_agent_response():
         follow_ups=["What about Salary?", "Any outliers?", "Compare with HR?"],
         caveats=["Based on 5 responses."],
         tool_calls_made=["segment_stats"],
+        table=[{"Department": "Engineering", "mean": 4.0, "count": 2}],
+        table_title="Satisfaction by Department",
     )
+
+
+def test_chat_returns_and_persists_table(client, sample_csv_bytes):
+    sid = _upload(client, sample_csv_bytes)
+    with patch("app.api.chat._agent.run", new=AsyncMock(return_value=_mock_agent_response())):
+        r = client.post(f"/api/sessions/{sid}/chat", json={"message": "by dept", "history": []})
+    assert r.status_code == 200
+    assert r.json()["table"]["rows"][0]["Department"] == "Engineering"
+    # Table survives reload via GET /messages.
+    msgs = client.get(f"/api/sessions/{sid}/messages").json()
+    assistant = [m for m in msgs if m["role"] == "assistant"][0]
+    assert assistant["table"]["rows"][0]["count"] == 2
 
 
 def test_chat_returns_response(client, sample_csv_bytes):

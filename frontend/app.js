@@ -28,6 +28,7 @@ const state = {
   history: [],            // [{role, content}, ...]
   uploadedFile: null,     // File object pending sheet selection
   uploadedFileSheets: [], // sheet names if multi-sheet Excel
+  compareSessionId: null, // second session for comparison mode
 };
 
 // ── API helpers ────────────────────────────────────────────────────────────
@@ -108,6 +109,7 @@ function buildShell() {
     <button class="tab-btn" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
   </div>
   <div id="chat-area">
+    <div id="compare-bar" class="hidden"></div>
     <div id="messages"></div>
     <div id="chat-input-area">
       <textarea id="chat-input" placeholder="Ask a question about your data…" rows="1"></textarea>
@@ -151,6 +153,7 @@ async function loadSessions() {
     state.sessions = await apiGet('/sessions');
   } catch { state.sessions = []; }
   renderSessionList();
+  renderCompareBar();
   if (state.sessions.length === 0) {
     showUploadOverlay();
   } else if (!state.activeSessionId) {
@@ -172,7 +175,10 @@ function renderSessionList() {
 async function selectSession(id) {
   state.activeSessionId = id;
   state.history = [];
+  // Clear a stale comparison if it points at the newly-selected session.
+  if (state.compareSessionId === id) state.compareSessionId = null;
   renderSessionList();
+  renderCompareBar();
   hideUploadOverlay();
   switchTab(state.activeTab);
   if (state.activeTab === 'chat') {
@@ -180,6 +186,75 @@ async function selectSession(id) {
   } else {
     await loadDashboard();
   }
+}
+
+// ── Comparison mode ──────────────────────────────────────────────────────────
+function renderCompareBar() {
+  const bar = $('compare-bar');
+  if (!bar) return;
+  const others = state.sessions.filter(s => s.session_id !== state.activeSessionId);
+  if (!state.activeSessionId || others.length === 0) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+  const opts = ['<option value="">Compare against…</option>']
+    .concat(others.map(s =>
+      `<option value="${s.session_id}" ${s.session_id === state.compareSessionId ? 'selected' : ''}>${esc(s.filename)}</option>`))
+    .join('');
+  bar.innerHTML = `
+    <span class="compare-label">Compare</span>
+    <select id="compare-select" onchange="setCompare(this.value)">${opts}</select>
+    ${state.compareSessionId ? `<button onclick="viewDiff()">View diff</button>
+      <button class="compare-clear" onclick="setCompare('')">Clear</button>` : ''}`;
+}
+
+function setCompare(id) {
+  state.compareSessionId = id || null;
+  renderCompareBar();
+}
+
+async function viewDiff() {
+  if (!state.activeSessionId || !state.compareSessionId) return;
+  try {
+    const res = await apiPost('/compare', {
+      base_session_id: state.activeSessionId,
+      compare_session_id: state.compareSessionId,
+    });
+    showDiffModal(res.diff);
+  } catch (err) { alert(`Compare failed: ${err.message}`); }
+}
+
+function showDiffModal(diff) {
+  const numeric = (diff.column_diffs || []).filter(d => 'mean_delta' in d);
+  const numRows = numeric.map(d =>
+    `<tr><td>${esc(d.column)}</td><td>${esc(d.base_mean)}</td><td>${esc(d.compare_mean)}</td>
+     <td class="${d.mean_delta >= 0 ? 'pos' : 'neg'}">${d.mean_delta >= 0 ? '+' : ''}${esc(d.mean_delta)}</td></tr>`).join('');
+  const numTable = numeric.length ? `
+    <table class="data-table"><thead><tr><th>Column</th><th>Base mean</th><th>Compare mean</th><th>Δ</th></tr></thead>
+    <tbody>${numRows}</tbody></table>` : '<p class="diff-empty">No shared numeric columns.</p>';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay visible';
+  modal.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>${esc(diff.base_filename)} vs ${esc(diff.compare_filename)}</h2>
+        <button onclick="this.closest('.modal-overlay').remove()">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="stats-cards">
+          <div class="stat-card"><div class="label">Base rows</div><div class="value">${diff.base_row_count}</div></div>
+          <div class="stat-card"><div class="label">Compare rows</div><div class="value">${diff.compare_row_count}</div></div>
+          <div class="stat-card"><div class="label">Row Δ</div><div class="value">${diff.row_count_delta >= 0 ? '+' : ''}${diff.row_count_delta}</div></div>
+        </div>
+        <h2>Numeric changes</h2>
+        ${numTable}
+        ${(diff.only_in_base || []).length ? `<p class="diff-note">Only in base: ${diff.only_in_base.map(esc).join(', ')}</p>` : ''}
+        ${(diff.only_in_compare || []).length ? `<p class="diff-note">Only in compare: ${diff.only_in_compare.map(esc).join(', ')}</p>` : ''}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
@@ -298,7 +373,7 @@ async function loadMessages() {
     const data = await apiGet(`/sessions/${state.activeSessionId}/messages`);
     for (const m of data) {
       appendMessage(m.role, m.content, m.chart || null,
-                    m.follow_ups || [], m.caveats || [], m.generated_code || null);
+                    m.follow_ups || [], m.caveats || [], m.generated_code || null, m.table || null);
       state.history.push({ role: m.role, content: m.content });
     }
   } catch { /* first session, no messages */ }
@@ -327,10 +402,11 @@ async function sendMessage() {
     const data = await apiPost(`/sessions/${state.activeSessionId}/chat`, {
       message: msg,
       history: state.history.slice(-20),
+      compare_session_id: state.compareSessionId,
     });
     document.getElementById(thinkId)?.remove();
     appendMessage('assistant', data.content, data.chart,
-                  data.follow_ups || [], data.caveats || [], data.generated_code);
+                  data.follow_ups || [], data.caveats || [], data.generated_code, data.table);
     state.history.push({ role: 'assistant', content: data.content });
   } catch (err) {
     document.getElementById(thinkId)?.remove();
@@ -340,7 +416,30 @@ async function sendMessage() {
   scrollMessages();
 }
 
-function appendMessage(role, content, chart, followUps, caveats, code) {
+function renderTable(table) {
+  // table is {rows: [...]|{...}, title} — render the deterministic facts as a grid.
+  if (!table) return '';
+  let rows = table.rows;
+  if (!rows) return '';
+  // Normalise dict-of-values into rows of {key, value}.
+  if (!Array.isArray(rows)) {
+    rows = Object.entries(rows).map(([k, v]) => ({ metric: k, value: v }));
+  }
+  if (!rows.length || typeof rows[0] !== 'object') return '';
+  const cols = Object.keys(rows[0]);
+  const head = cols.map(c => `<th>${esc(c)}</th>`).join('');
+  const body = rows.slice(0, 50).map(r =>
+    `<tr>${cols.map(c => `<td>${esc(r[c])}</td>`).join('')}</tr>`).join('');
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr>${head}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
+function appendMessage(role, content, chart, followUps, caveats, code, table) {
   const msgs = $messages();
   if (!msgs) return;
 
@@ -372,10 +471,13 @@ function appendMessage(role, content, chart, followUps, caveats, code) {
         `<button class="follow-up-chip" onclick="useFollowUp(this)">${esc(f)}</button>`
       ).join('')}</div>` : '';
 
+  const tableHtml = renderTable(table);
+
   msgs.insertAdjacentHTML('beforeend', `
     <div class="message ${role}">
       <div class="message-bubble">${nl2br(esc(content))}</div>
       ${chartHtml}
+      ${tableHtml}
       ${codeHtml}
       ${caveatHtml}
       ${fuHtml}

@@ -30,6 +30,7 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     generated_code = Column(Text, nullable=True)
     chart_paths = Column(JSON, nullable=True)
+    data_table = Column(JSON, nullable=True)
     follow_ups = Column(JSON, nullable=True)
     caveats = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
