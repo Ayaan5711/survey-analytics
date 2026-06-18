@@ -7,6 +7,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from app.data.profiler import DatasetProfile
 
+# Shared accent — keeps dashboard charts consistent with the UI.
+_ACCENT = "#4f46e5"
+
 
 @dataclass
 class ChartResult:
@@ -40,7 +43,7 @@ def deterministic_charts(profile: DatasetProfile, out_dir: Path) -> list[ChartRe
         labels = list(col_p.top_values.keys())
         values = list(col_p.top_values.values())
         fig, ax = plt.subplots(figsize=(7, 4))
-        ax.bar(labels[:10], values[:10], color="black")
+        ax.bar(labels[:10], values[:10], color=_ACCENT)
         ax.set_title(f"{col_name} — response counts", fontsize=12)
         ax.set_xlabel(col_name)
         ax.set_ylabel("Count")
@@ -59,7 +62,7 @@ def deterministic_charts(profile: DatasetProfile, out_dir: Path) -> list[ChartRe
         sample_vals = [v for v in col_p.sample_values if v is not None]
         if sample_vals:
             fig, ax = plt.subplots(figsize=(7, 4))
-            ax.hist(sample_vals, bins=min(10, len(sample_vals)), color="black", edgecolor="white")
+            ax.hist(sample_vals, bins=min(10, len(sample_vals)), color=_ACCENT, edgecolor="white")
             ax.set_title(f"{col_name} — distribution (sample)", fontsize=12)
             ax.set_xlabel(col_name)
             ax.set_ylabel("Frequency")
@@ -76,7 +79,7 @@ def deterministic_charts(profile: DatasetProfile, out_dir: Path) -> list[ChartRe
         fig, ax = plt.subplots(figsize=(7, 4))
         cols = list(missing.keys())[:10]
         pcts = [missing[c] for c in cols]
-        ax.barh(cols, pcts, color="black")
+        ax.barh(cols, pcts, color=_ACCENT)
         ax.set_title("Missing data %", fontsize=12)
         ax.set_xlabel("Missing %")
         for spine in ["top", "right"]:
