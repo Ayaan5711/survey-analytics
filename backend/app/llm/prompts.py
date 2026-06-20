@@ -40,8 +40,10 @@ def _profile_summary(profile: "DatasetProfile") -> str:
         if col.dtype == "numeric":
             lines.append(f"- {name} (numeric): mean={col.mean}, min={col.min}, max={col.max}, missing={col.missing_pct}%")
         elif col.dtype == "categorical":
-            top = list(col.top_values.items())[:3]
-            lines.append(f"- {name} (categorical): top={top}, n_unique={col.n_unique}, missing={col.missing_pct}%")
+            # List the exact response values so the model passes them verbatim to tools.
+            values = list(col.top_values.keys())[:8]
+            vals_str = "; ".join(f'"{v}"' for v in values)
+            lines.append(f"- {name} (categorical, {col.n_unique} values; exact values: {vals_str}), missing={col.missing_pct}%")
         else:
             lines.append(f"- {name} ({col.dtype}): missing={col.missing_pct}%")
     return "\n".join(lines)
@@ -66,9 +68,16 @@ When the user asks a question:
    chart when the user explicitly asks for a single number or a yes/no answer.
 3. For open-ended questions, chain up to 4 tool calls before synthesising, and
    include the most illustrative chart.
-4. Use generate_code for custom/novel charts no built-in tool covers.
-5. Always be specific — mention column names and numbers in your answers.
-6. Never fabricate data values."""
+4. Pick the tool that matches the question shape:
+   - "compare inflation expectations by <gender/age group/education/income/category>" → compare_expectations_by_segment.
+   - "compare X by Y" / "show X by Y" → crosstab (two categoricals) or segment_stats (numeric metric).
+   - "show X by A and B" (two groupings) → pivot_table.
+   - "which city/state/segment has the highest % of <response>" → rank_groups_by_value.
+   - "profile of respondents who <condition>" → filter_profile.
+   - "what exact values did respondents who <condition> enter" → list_filtered_values.
+   - "how many selected <value/threshold>" → threshold_count (numeric) or distribution (categorical).
+5. Use generate_code only for custom charts no built-in tool covers.
+6. Always be specific — quote the column names, the exact response values, and the numbers from the tool results. Do not estimate or fabricate values."""
 
 
 def tool_definitions() -> list[dict]:
@@ -120,6 +129,55 @@ def tool_definitions() -> list[dict]:
                 "threshold": {"type": "number"},
                 "operator": {"type": "string", "enum": ["gt", "lt", "gte", "lte", "eq"]},
             }, "required": ["column", "threshold", "operator"]},
+        }},
+        {"type": "function", "function": {
+            "name": "compare_expectations_by_segment",
+            "description": "Compare inflation expectations across a demographic segment (gender, age group, education, income, respondent category). For each segment it reports respondent count, sample share, and the % selecting 'price increase more than current rate' for every expectation column. Use for questions 1-5 ('compare inflation expectations by <segment>'). Numeric age columns are auto-binned into age groups.",
+            "parameters": {"type": "object", "properties": {
+                "segment_col": {"type": "string", "description": "Demographic column to compare across (e.g. the gender/age/income/education/category column)"},
+                "target_value": {"type": "string", "description": "Response treated as 'expecting inflation'", "default": "Price increase more than current rate"},
+            }, "required": ["segment_col"]},
+        }},
+        {"type": "function", "function": {
+            "name": "rank_groups_by_value",
+            "description": "Rank groups by the percentage that selected a specific response value, excluding groups below min_n respondents. Use for 'which city/state/segment has the highest % of <response>?'. For 'price increase' questions use the exact value 'Price increase more than current rate'. Returns a ranked table and names the top group.",
+            "parameters": {"type": "object", "properties": {
+                "group_col": {"type": "string", "description": "Column to group/rank by (e.g. City, State, segment)"},
+                "target_col": {"type": "string", "description": "Column holding the response of interest"},
+                "target_value": {"type": "string", "description": "The response value to measure the share of, e.g. 'Price increase more than current rate', 'No change in prices', 'Decline in prices'"},
+                "min_n": {"type": "integer", "description": "Minimum respondents for a group to be ranked", "default": 5},
+                "match_mode": {"type": "string", "enum": ["eq", "contains"], "default": "eq"},
+                "top_n": {"type": "integer", "default": 15},
+            }, "required": ["group_col", "target_col", "target_value"]},
+        }},
+        {"type": "function", "function": {
+            "name": "filter_profile",
+            "description": "Subset respondents matching a condition, then profile that subset across all other columns (top values / means). Use for 'show the profile of respondents who <condition>'.",
+            "parameters": {"type": "object", "properties": {
+                "filter_col": {"type": "string"},
+                "filter_value": {"type": "string", "description": "Value to match (numeric or categorical)"},
+                "operator": {"type": "string", "enum": ["eq", "ne", "gt", "lt", "gte", "lte", "contains"], "default": "eq"},
+            }, "required": ["filter_col", "filter_value"]},
+        }},
+        {"type": "function", "function": {
+            "name": "list_filtered_values",
+            "description": "List the raw values entered in specific columns for respondents matching a condition. Use for 'for respondents who selected X, what exact values were entered in columns A, B, C?'.",
+            "parameters": {"type": "object", "properties": {
+                "filter_col": {"type": "string"},
+                "filter_value": {"type": "string"},
+                "value_cols": {"type": "array", "items": {"type": "string"}, "description": "Columns whose raw values to list"},
+                "operator": {"type": "string", "enum": ["eq", "ne", "gt", "lt", "gte", "lte", "contains"], "default": "eq"},
+                "max_rows": {"type": "integer", "default": 50},
+            }, "required": ["filter_col", "filter_value", "value_cols"]},
+        }},
+        {"type": "function", "function": {
+            "name": "pivot_table",
+            "description": "Two-dimensional breakdown of one column across two grouping columns (index × column). Means if a numeric value_col is given, otherwise counts. Use for 'show X by A and B'.",
+            "parameters": {"type": "object", "properties": {
+                "index_col": {"type": "string"},
+                "column_col": {"type": "string"},
+                "value_col": {"type": "string", "description": "Optional numeric column to average; omit for counts"},
+            }, "required": ["index_col", "column_col"]},
         }},
         {"type": "function", "function": {
             "name": "generate_code",
