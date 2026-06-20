@@ -40,8 +40,10 @@ def _profile_summary(profile: "DatasetProfile") -> str:
         if col.dtype == "numeric":
             lines.append(f"- {name} (numeric): mean={col.mean}, min={col.min}, max={col.max}, missing={col.missing_pct}%")
         elif col.dtype == "categorical":
-            top = list(col.top_values.items())[:3]
-            lines.append(f"- {name} (categorical): top={top}, n_unique={col.n_unique}, missing={col.missing_pct}%")
+            # List the exact response values so the model passes them verbatim to tools.
+            values = list(col.top_values.keys())[:8]
+            vals_str = "; ".join(f'"{v}"' for v in values)
+            lines.append(f"- {name} (categorical, {col.n_unique} values; exact values: {vals_str}), missing={col.missing_pct}%")
         else:
             lines.append(f"- {name} ({col.dtype}): missing={col.missing_pct}%")
     return "\n".join(lines)

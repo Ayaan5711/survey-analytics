@@ -542,7 +542,79 @@ _DISPATCH = {
 }
 
 
+# Params that name a column (or list of columns), and value params paired with
+# the column they're matched against — used to fuzzy-resolve near-miss arguments.
+_COLUMN_PARAMS = {"column", "group_col", "metric_col", "row_col", "col_col",
+                  "index_col", "column_col", "segment_col", "filter_col", "target_col"}
+_COLUMN_LIST_PARAMS = {"value_cols"}
+_VALUE_PARAMS = {"target_value": "target_col", "filter_value": "filter_col"}
+
+
+def _resolve_column(name: str, columns: list[str]) -> str:
+    """Map an approximate column name to the closest real column header."""
+    if name in columns:
+        return name
+    norm_map = {_norm(c): c for c in columns}
+    if _norm(name) in norm_map:
+        return norm_map[_norm(name)]
+    # substring match (e.g. 'Food Products' inside 'Q11_2_Food Products(Q11)')
+    contained = [c for c in columns if _norm(name) in _norm(c)]
+    if len(contained) == 1:
+        return contained[0]
+    pool = contained or columns
+    try:
+        from rapidfuzz import process, fuzz
+        match = process.extractOne(name, pool, scorer=fuzz.WRatio)
+        if match and match[1] >= 75:
+            return match[0]
+    except ImportError:
+        pass
+    return name  # leave unchanged → raises a clear KeyError downstream
+
+
+def _resolve_value(value, series: pd.Series) -> str:
+    """Snap an approximate response value to the closest actual value in the column."""
+    vals = series.dropna().astype(str).unique().tolist()
+    if not vals:
+        return value
+    norm_map = {_norm(v): v for v in vals}
+    if _norm(value) in norm_map:
+        return norm_map[_norm(value)]
+    contained = [v for v in vals if _norm(value) in _norm(v) or _norm(v) in _norm(value)]
+    if len(contained) == 1:
+        return contained[0]
+    try:
+        from rapidfuzz import process, fuzz
+        match = process.extractOne(str(value), vals, scorer=fuzz.WRatio)
+        if match and match[1] >= 80:
+            return match[0]
+    except ImportError:
+        pass
+    return value
+
+
+def _resolve_params(df: pd.DataFrame, params: dict) -> dict:
+    """Fuzzy-resolve column/value arguments so near-miss names from the LLM still work."""
+    cols = list(df.columns)
+    resolved = dict(params)
+    for key in list(resolved):
+        if key in _COLUMN_PARAMS and isinstance(resolved[key], str):
+            resolved[key] = _resolve_column(resolved[key], cols)
+        elif key in _COLUMN_LIST_PARAMS and isinstance(resolved[key], list):
+            resolved[key] = [_resolve_column(c, cols) if isinstance(c, str) else c for c in resolved[key]]
+    # Snap value params to real values, but only for equality-style matching.
+    op = resolved.get("operator", "eq")
+    for vkey, ckey in _VALUE_PARAMS.items():
+        if vkey in resolved and isinstance(resolved[vkey], str) and resolved.get(ckey) in df.columns:
+            if vkey == "filter_value" and op not in ("eq", "ne"):
+                continue
+            if vkey == "target_value" and resolved.get("match_mode") == "contains":
+                continue
+            resolved[vkey] = _resolve_value(resolved[vkey], df[resolved[ckey]])
+    return resolved
+
+
 def dispatch_tool(df: pd.DataFrame, name: str, params: dict) -> ToolResult:
     if name not in _DISPATCH:
         raise ValueError(f"Unknown tool: {name}. Available: {list(_DISPATCH)}")
-    return _DISPATCH[name](df, **params)
+    return _DISPATCH[name](df, **_resolve_params(df, params))

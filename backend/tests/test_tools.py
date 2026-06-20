@@ -81,6 +81,25 @@ def test_compare_expectations_by_segment():
     assert by_seg["F"][food_key] == pytest.approx(66.7, abs=0.1)
 
 
+def test_dispatch_resolves_approximate_column_and_value():
+    df = pd.DataFrame({
+        "Q4_City": ["Chennai", "Chennai", "Mumbai", "Mumbai", "Mumbai"],
+        "Q11_2_Food Products(Q11)": [
+            "Price increase more than current rate", "No change in prices",
+            "Price increase more than current rate", "Decline in prices",
+            "Price increase more than current rate",
+        ],
+    })
+    # Friendly/approximate names + value should still resolve to the real ones.
+    result = dispatch_tool(df, "rank_groups_by_value", {
+        "group_col": "City", "target_col": "Food Products",
+        "target_value": "price increase more than current", "min_n": 1,
+    })
+    assert result.params["group_col"] == "Q4_City"
+    assert result.params["target_col"] == "Q11_2_Food Products(Q11)"
+    assert result.params["target_value"] == "Price increase more than current rate"
+
+
 def test_compare_expectations_bins_numeric_age():
     df = pd.DataFrame({
         "Age": [20, 30, 40, 50, 60],
