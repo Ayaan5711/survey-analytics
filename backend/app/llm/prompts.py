@@ -40,8 +40,10 @@ def _profile_summary(profile: "DatasetProfile") -> str:
         if col.dtype == "numeric":
             lines.append(f"- {name} (numeric): mean={col.mean}, min={col.min}, max={col.max}, missing={col.missing_pct}%")
         elif col.dtype == "categorical":
-            top = list(col.top_values.items())[:3]
-            lines.append(f"- {name} (categorical): top={top}, n_unique={col.n_unique}, missing={col.missing_pct}%")
+            # List the exact response values so the model passes them verbatim to tools.
+            values = list(col.top_values.keys())[:8]
+            vals_str = "; ".join(f'"{v}"' for v in values)
+            lines.append(f"- {name} (categorical, {col.n_unique} values; exact values: {vals_str}), missing={col.missing_pct}%")
         else:
             lines.append(f"- {name} ({col.dtype}): missing={col.missing_pct}%")
     return "\n".join(lines)
@@ -67,6 +69,7 @@ When the user asks a question:
 3. For open-ended questions, chain up to 4 tool calls before synthesising, and
    include the most illustrative chart.
 4. Pick the tool that matches the question shape:
+   - "compare inflation expectations by <gender/age group/education/income/category>" → compare_expectations_by_segment.
    - "compare X by Y" / "show X by Y" → crosstab (two categoricals) or segment_stats (numeric metric).
    - "show X by A and B" (two groupings) → pivot_table.
    - "which city/state/segment has the highest % of <response>" → rank_groups_by_value.
@@ -128,12 +131,22 @@ def tool_definitions() -> list[dict]:
             }, "required": ["column", "threshold", "operator"]},
         }},
         {"type": "function", "function": {
+            "name": "compare_expectations_by_segment",
+            "description": "Compare inflation expectations across a demographic segment (gender, age group, education, income, respondent category). For each segment it reports respondent count, sample share, and the % selecting 'price increase more than current rate' for every expectation column. Use for questions 1-5 ('compare inflation expectations by <segment>'). Numeric age columns are auto-binned into age groups.",
+            "parameters": {"type": "object", "properties": {
+                "segment_col": {"type": "string", "description": "Demographic column to compare across (e.g. the gender/age/income/education/category column)"},
+                "target_value": {"type": "string", "description": "Response treated as 'expecting inflation'", "default": "Price increase more than current rate"},
+            }, "required": ["segment_col"]},
+        }},
+        {"type": "function", "function": {
             "name": "rank_groups_by_value",
-            "description": "Rank groups by the percentage that selected a specific response value. Use for 'which city/state/segment has the highest % of <response>?' — e.g. which city has the most respondents expecting price increases. Returns a ranked table and names the top group.",
+            "description": "Rank groups by the percentage that selected a specific response value, excluding groups below min_n respondents. Use for 'which city/state/segment has the highest % of <response>?'. For 'price increase' questions use the exact value 'Price increase more than current rate'. Returns a ranked table and names the top group.",
             "parameters": {"type": "object", "properties": {
                 "group_col": {"type": "string", "description": "Column to group/rank by (e.g. City, State, segment)"},
                 "target_col": {"type": "string", "description": "Column holding the response of interest"},
-                "target_value": {"type": "string", "description": "The exact response value to measure the share of (e.g. 'Price increase more than current rate')"},
+                "target_value": {"type": "string", "description": "The response value to measure the share of, e.g. 'Price increase more than current rate', 'No change in prices', 'Decline in prices'"},
+                "min_n": {"type": "integer", "description": "Minimum respondents for a group to be ranked", "default": 5},
+                "match_mode": {"type": "string", "enum": ["eq", "contains"], "default": "eq"},
                 "top_n": {"type": "integer", "default": 15},
             }, "required": ["group_col", "target_col", "target_value"]},
         }},
