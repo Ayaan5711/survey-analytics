@@ -180,6 +180,13 @@ def tool_definitions() -> list[dict]:
             }, "required": ["index_col", "column_col"]},
         }},
         {"type": "function", "function": {
+            "name": "open_text_themes",
+            "description": "Extract recurring themes and the sentiment split from a free-text / open-ended column (e.g. comments, remarks, feedback). Use for 'what are people saying about…', 'summarise the comments', 'themes/sentiment in <column>'. Returns a themes bar + sentiment pie.",
+            "parameters": {"type": "object", "properties": {
+                "column": {"type": "string", "description": "The open-text column to analyse"},
+            }, "required": ["column"]},
+        }},
+        {"type": "function", "function": {
             "name": "generate_code",
             "description": "Generate and execute custom Python pandas/matplotlib code for analyses not covered by other tools. Use only when no other tool fits.",
             "parameters": {"type": "object", "properties": {
