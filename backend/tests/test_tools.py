@@ -64,21 +64,31 @@ def test_rank_normalizes_whitespace_in_value():
 
 
 def test_compare_expectations_by_segment():
+    # Two questions share the same response scale → auto-detected, no hardcoded labels.
     df = pd.DataFrame({
         "Gender": ["M", "M", "F", "F", "F"],
-        "Food(Q11)": [
-            "Price increase more than current rate", "No change in prices",
-            "Price increase more than current rate", "Decline in prices",
-            "Price increase more than current rate",
-        ],
+        "Food(Q11)": ["Up", "Down", "Up", "Down", "Up"],
+        "Fuel(Q11)": ["Up", "Up", "Up", "Down", "Down"],
     })
-    result = dispatch_tool(df, "compare_expectations_by_segment", {"segment_col": "Gender"})
+    result = dispatch_tool(df, "compare_expectations_by_segment",
+                           {"segment_col": "Gender", "target_value": "Up"})
     assert result.tool_name == "compare_expectations_by_segment"
     by_seg = {r["segment"]: r for r in result.table}
-    # Female: 2 of 3 picked 'more than current rate' = 66.7%
     assert by_seg["F"]["respondents"] == 3
     food_key = [k for k in by_seg["F"] if "Food" in k][0]
+    # Female: 2 of 3 picked 'Up' = 66.7%
     assert by_seg["F"][food_key] == pytest.approx(66.7, abs=0.1)
+
+
+def test_compare_expectations_defaults_target_to_most_common():
+    df = pd.DataFrame({
+        "Gender": ["M", "F", "M", "F"],
+        "A(Q1)": ["Yes", "Yes", "Yes", "No"],
+        "B(Q1)": ["Yes", "No", "Yes", "Yes"],
+    })
+    # No target_value → most common response ('Yes') is used.
+    result = dispatch_tool(df, "compare_expectations_by_segment", {"segment_col": "Gender"})
+    assert "Yes" in result.summary
 
 
 def test_dispatch_resolves_approximate_column_and_value():
@@ -100,15 +110,21 @@ def test_dispatch_resolves_approximate_column_and_value():
     assert result.params["target_value"] == "Price increase more than current rate"
 
 
-def test_compare_expectations_bins_numeric_age():
+def test_compare_expectations_bins_continuous_numeric_segment():
+    import numpy as np
+    rng = list(range(20, 61))  # 41 distinct ages → continuous → auto-binned
+    n = len(rng)
     df = pd.DataFrame({
-        "Age": [20, 30, 40, 50, 60],
-        "General(Q11)": ["No change in prices"] * 5,
+        "Age": rng,
+        "A(Q1)": (["Up", "Down"] * n)[:n],
+        "B(Q1)": (["Up", "Up", "Down"] * n)[:n],
     })
-    result = dispatch_tool(df, "compare_expectations_by_segment", {"segment_col": "Age"})
-    segs = {r["segment"] for r in result.table}
-    assert segs <= {"18-24", "25-34", "35-44", "45-54", "55+"}
-    assert "25-34" in segs
+    result = dispatch_tool(df, "compare_expectations_by_segment",
+                           {"segment_col": "Age", "target_value": "Up"})
+    segs = [r["segment"] for r in result.table]
+    # Binned into a handful of numeric ranges, not 41 individual ages.
+    assert len(segs) <= 6
+    assert all("-" in s for s in segs)
 
 
 def test_filter_profile_subsets_and_profiles(inflation_df):

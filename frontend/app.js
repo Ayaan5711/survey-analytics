@@ -105,8 +105,8 @@ function buildShell() {
 </div>
 <div id="main">
   <div id="tab-bar">
-    <button class="tab-btn active" data-tab="chat" onclick="switchTab('chat')">Chat</button>
     <button class="tab-btn" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+    <button class="tab-btn active" data-tab="chat" onclick="switchTab('chat')">Chat</button>
   </div>
   <div id="chat-area">
     <div id="compare-bar" class="hidden"></div>
@@ -556,14 +556,45 @@ function renderDashboard(area, dash, insights, pins) {
         </div>`).join('')}
     </div>` : '';
 
+  // ── Data quality (from quality_flags already in the response — no extra calls) ──
+  const q = dash.quality_flags || {};
+  const qItems = [];
+  if (q.duplicate_rows) qItems.push(`${q.duplicate_rows} duplicate row${q.duplicate_rows > 1 ? 's' : ''}`);
+  if ((q.mostly_empty_columns || []).length) qItems.push(`${q.mostly_empty_columns.length} mostly-empty column${q.mostly_empty_columns.length > 1 ? 's' : ''}`);
+  if ((q.constant_columns || []).length) qItems.push(`${q.constant_columns.length} constant column${q.constant_columns.length > 1 ? 's' : ''}`);
+  if ((q.fuzzy_category_issues || []).length) qItems.push(`${q.fuzzy_category_issues.length} column${q.fuzzy_category_issues.length > 1 ? 's' : ''} with near-duplicate values`);
+  const qualityHtml = `
+    <div class="quality-card ${qItems.length ? 'has-issues' : 'clean'}">
+      <span class="quality-title">${qItems.length ? '⚠ Data quality' : '✓ Data quality'}</span>
+      <span class="quality-body">${qItems.length ? qItems.join(' · ') : 'No issues detected'}</span>
+    </div>`;
+
+  // ── Column overview (from column_summary — collapsible to avoid clutter) ──
+  const cs = dash.column_summary || {};
+  const colRows = Object.entries(cs).map(([name, c]) => `
+    <tr><td>${esc(name)}</td><td>${esc(c.dtype)}</td>
+        <td>${Math.round(c.missing_pct)}%</td><td>${esc(c.n_unique)}</td></tr>`).join('');
+  const columnsHtml = Object.keys(cs).length ? `
+    <details class="columns-details">
+      <summary>Column overview (${Object.keys(cs).length})</summary>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Column</th><th>Type</th><th>Missing</th><th>Unique</th></tr></thead>
+          <tbody>${colRows}</tbody>
+        </table>
+      </div>
+    </details>` : '';
+
   area.innerHTML = `
     <div class="stats-cards">
       <div class="stat-card"><div class="label">Rows</div><div class="value">${dash.row_count}</div></div>
       <div class="stat-card"><div class="label">Columns</div><div class="value">${dash.col_count}</div></div>
       <div class="stat-card"><div class="label">File</div><div class="value" style="font-size:14px">${esc(dash.filename)}</div></div>
     </div>
-    ${dash.narrative ? `<p style="font-size:14px;line-height:1.7;margin-bottom:20px;max-width:700px">${esc(dash.narrative)}</p>` : ''}
+    ${qualityHtml}
+    ${dash.narrative ? `<p class="dash-narrative">${esc(dash.narrative)}</p>` : ''}
     <div class="dashboard-charts">${chartsHtml}</div>
+    ${columnsHtml}
     ${pinnedSection}
     ${insightsHtml}
     <button class="export-btn" onclick="exportPdf()">Export PDF Report</button>`;

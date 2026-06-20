@@ -259,27 +259,53 @@ def _build_mask(series: pd.Series, value, op: str) -> pd.Series:
     return s == target
 
 
-# Standard age groups used when a numeric age column is segmented.
-_AGE_BINS = [17, 24, 34, 44, 54, 200]
-_AGE_LABELS = ["18-24", "25-34", "35-44", "45-54", "55+"]
-
-# Canonical inflation-expectation response labels.
-_PRICE_INCREASE_MORE = "Price increase more than current rate"
-_EXPECTATION_LABELS = {_norm(x) for x in {
-    "Price increase more than current rate",
-    "Price increase similar to current rate",
-    "Price increase less than current rate",
-    "No change in prices",
-    "Decline in prices",
-}}
+def _nice_step(span: float) -> int:
+    """Pick a human-friendly bin width that splits `span` into ~4-6 bins."""
+    for step in (1, 2, 5, 10, 15, 20, 25, 50, 100, 200, 500, 1000):
+        if span / step <= 6:
+            return step
+    return int(span / 5) or 1
 
 
 def _bin_segment(df: pd.DataFrame, segment_col: str) -> pd.Series:
-    """Return the segment series, binning numeric age-like columns into age groups."""
+    """Return the segment series. Continuous numeric columns are auto-binned into
+    a handful of human-friendly ranges (data-driven — no column-name or domain
+    assumptions). Low-cardinality numerics and categoricals are returned as-is."""
     s = df[segment_col]
-    if pd.api.types.is_numeric_dtype(s) and "age" in segment_col.lower():
-        return pd.cut(pd.to_numeric(s, errors="coerce"), bins=_AGE_BINS, labels=_AGE_LABELS)
+    if pd.api.types.is_numeric_dtype(s):
+        nums = pd.to_numeric(s, errors="coerce").dropna()
+        if nums.nunique() > 12:                       # treat as continuous → bin
+            lo, hi = float(nums.min()), float(nums.max())
+            step = _nice_step(hi - lo) if hi > lo else 1
+            start = int(lo // step * step)
+            edges = list(range(start, int(hi) + step + 1, step))
+            if len(edges) >= 2:
+                labels = [f"{edges[i]}-{edges[i + 1] - 1}" for i in range(len(edges) - 1)]
+                return pd.cut(pd.to_numeric(s, errors="coerce"), bins=edges,
+                             labels=labels, include_lowest=True)
     return s
+
+
+def _detect_scale_columns(df: pd.DataFrame) -> list[str]:
+    """Find a repeated response scale: the largest group of categorical columns
+    that share (nearly) the same set of values — e.g. a block of Likert-style
+    questions. Fully data-driven, no hardcoded labels."""
+    signatures: dict[frozenset, list[str]] = {}
+    for c in df.columns:
+        s = df[c].dropna()
+        if s.empty:
+            continue
+        # Candidate scale columns are low-cardinality, non-numeric questions.
+        if pd.api.types.is_numeric_dtype(s):
+            continue
+        vals = frozenset(s.astype(str).map(_norm).unique())
+        if 2 <= len(vals) <= 10:
+            signatures.setdefault(vals, []).append(c)
+    if not signatures:
+        return []
+    # Largest block of columns sharing a value-set, preferring more columns.
+    best = max(signatures.items(), key=lambda kv: (len(kv[1]), len(kv[0])))
+    return best[1] if len(best[1]) >= 2 else []
 
 
 def rank_groups_by_value(
@@ -441,34 +467,26 @@ def pivot_table(
                       summary=summary, table=table, png_bytes=png)
 
 
-def _detect_expectation_columns(df: pd.DataFrame) -> list[str]:
-    """Columns whose values are predominantly inflation-expectation labels."""
-    cols = []
-    for c in df.columns:
-        s = df[c].dropna()
-        if s.empty:
-            continue
-        sample = s.astype(str).map(_norm)
-        hits = sample.isin(_EXPECTATION_LABELS).mean()
-        if hits >= 0.5:
-            cols.append(c)
-    return cols
-
-
 def compare_expectations_by_segment(
-    df: pd.DataFrame, segment_col: str, target_value: str = _PRICE_INCREASE_MORE,
+    df: pd.DataFrame, segment_col: str, target_value: str | None = None,
     expectation_cols: list[str] | None = None,
 ) -> ToolResult:
-    """Compare inflation expectations across a segment (gender, age group, income, …).
+    """Compare a repeated response scale across a segment (gender, age band, income…).
 
-    For each segment value, reports respondent count, sample share, and the share
-    selecting `target_value` ('price increase more than current rate' by default)
-    for every expectation column. Reproduces the Q1-5 multi-metric comparison.
-    Numeric age columns are auto-binned into age groups.
+    Auto-detects a block of questions sharing the same response options (data-driven,
+    no hardcoded labels). For each segment value, reports respondent count, sample
+    share, and the share selecting `target_value` for every scale column. If
+    `target_value` is omitted, the most common response across the scale is used
+    (and named in the summary). Continuous numeric segments are auto-binned.
     """
-    cols = expectation_cols or _detect_expectation_columns(df)
+    cols = expectation_cols or _detect_scale_columns(df)
     if not cols:
-        raise ValueError("No inflation-expectation columns detected in this dataset.")
+        raise ValueError("No repeated response scale detected to compare across the segment.")
+
+    # Resolve the target response from the data when not supplied.
+    if not target_value:
+        all_vals = pd.concat([df[c].dropna().astype(str) for c in cols])
+        target_value = all_vals.value_counts().index[0] if not all_vals.empty else ""
 
     seg = _bin_segment(df, segment_col)
     work = df.copy()
@@ -504,14 +522,14 @@ def compare_expectations_by_segment(
     ax.set_xticks(x + width * (len(metric_cols) - 1) / 2)
     ax.set_xticklabels(seg_labels, rotation=20, ha="right")
     ax.set_ylabel(f"% '{target_value}'")
-    ax.set_title(f"Inflation expectations by {segment_col}", fontsize=12)
+    ax.set_title(f"Responses by {segment_col}", fontsize=12)
     ax.legend(fontsize=7, ncol=2)
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
     png = _fig_to_bytes(fig)
 
-    summary = (f"Inflation expectations ('{target_value}') by {segment_col} across "
-               f"{len(cols)} metrics and {len(rows)} segments.")
+    summary = (f"Share selecting '{target_value}' by {segment_col} across "
+               f"{len(cols)} questions and {len(rows)} segments.")
     min_n = min((r["respondents"] for r in rows), default=0)
     caveat = f"Smallest segment has only {min_n} respondents." if min_n < _CAVEAT_MIN_N else None
     return ToolResult(tool_name="compare_expectations_by_segment",
