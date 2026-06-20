@@ -69,7 +69,7 @@ When the user asks a question:
 3. For open-ended questions, chain up to 4 tool calls before synthesising, and
    include the most illustrative chart.
 4. Pick the tool that matches the question shape:
-   - "compare inflation expectations by <gender/age group/education/income/category>" → compare_expectations_by_segment.
+   - "compare <expectations/ratings/responses> by <gender/age/education/income/category>" → compare_expectations_by_segment (pass the exact response option as target_value).
    - "compare X by Y" / "show X by Y" → crosstab (two categoricals) or segment_stats (numeric metric).
    - "show X by A and B" (two groupings) → pivot_table.
    - "which city/state/segment has the highest % of <response>" → rank_groups_by_value.
@@ -132,10 +132,10 @@ def tool_definitions() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "compare_expectations_by_segment",
-            "description": "Compare inflation expectations across a demographic segment (gender, age group, education, income, respondent category). For each segment it reports respondent count, sample share, and the % selecting 'price increase more than current rate' for every expectation column. Use for questions 1-5 ('compare inflation expectations by <segment>'). Numeric age columns are auto-binned into age groups.",
+            "description": "Compare a repeated response scale (a block of questions that share the same answer options, e.g. a set of expectation/Likert questions) across a demographic segment such as gender, age, education, income, or category. Auto-detects the scale columns from the data. For each segment it reports respondent count, sample share, and the % selecting target_value for every scale question. Use for 'compare <expectations/ratings/responses> by <segment>'. Continuous numeric segments (e.g. age) are auto-binned into ranges.",
             "parameters": {"type": "object", "properties": {
-                "segment_col": {"type": "string", "description": "Demographic column to compare across (e.g. the gender/age/income/education/category column)"},
-                "target_value": {"type": "string", "description": "Response treated as 'expecting inflation'", "default": "Price increase more than current rate"},
+                "segment_col": {"type": "string", "description": "Demographic column to compare across"},
+                "target_value": {"type": "string", "description": "The response option to measure the share of (e.g. the 'expecting a price increase' option). Pass the exact value from the column's listed values. If omitted, the most common response is used."},
             }, "required": ["segment_col"]},
         }},
         {"type": "function", "function": {

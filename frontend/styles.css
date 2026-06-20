@@ -358,6 +358,29 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Dashboard quality card + narrative + column overview ── */
+.dash-narrative { font-size: 14px; line-height: 1.7; margin-bottom: 22px; max-width: 720px; color: var(--ink); }
+.quality-card {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; border-radius: var(--radius); margin-bottom: 22px;
+  border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-sm);
+}
+.quality-card.has-issues { border-left: 3px solid #d97706; }
+.quality-card.clean { border-left: 3px solid #0d9488; }
+.quality-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.quality-card.has-issues .quality-title { color: #b45309; }
+.quality-card.clean .quality-title { color: #0d9488; }
+.quality-body { font-size: 13px; color: var(--ink-muted); }
+.columns-details {
+  margin: 24px 0; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.columns-details summary {
+  cursor: pointer; padding: 12px 16px; font-size: 13px; font-weight: 600; color: var(--ink); user-select: none;
+}
+.columns-details summary:hover { background: var(--surface-2); }
+.columns-details .data-table-wrap { border: none; border-top: 1px solid var(--border); border-radius: 0; max-height: 360px; overflow-y: auto; }
+
 /* ── Deterministic data tables ── */
 .data-table-wrap { margin-top: 10px; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .data-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--surface); }
