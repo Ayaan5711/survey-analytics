@@ -64,6 +64,19 @@ def test_chat_persists_message(client, sample_csv_bytes):
     assert msgs[1]["role"] == "assistant"
 
 
+def test_chat_caches_repeated_question(client, sample_csv_bytes):
+    sid = _upload(client, sample_csv_bytes)
+    run_mock = AsyncMock(return_value=_mock_agent_response())
+    with patch("app.api.chat._agent.run", new=run_mock):
+        r1 = client.post(f"/api/sessions/{sid}/chat", json={"message": "by dept", "history": []})
+        r2 = client.post(f"/api/sessions/{sid}/chat", json={"message": "by dept", "history": []})
+    assert r1.status_code == 200 and r2.status_code == 200
+    # Agent ran only once; second identical question served from cache.
+    assert run_mock.await_count == 1
+    assert r2.json()["cached"] is True
+    assert r1.json()["content"] == r2.json()["content"]
+
+
 def test_chat_session_not_found(client):
     r = client.post("/api/sessions/bad-id/chat", json={"message": "hi", "history": []})
     assert r.status_code == 404

@@ -51,6 +51,37 @@ def _black_bar(ax, labels, values, xlabel="", ylabel="", title=""):
         ax.spines[spine].set_visible(False)
 
 
+def render_open_text_chart(data: dict, column: str) -> bytes:
+    """Render a themes bar + sentiment split for an open-text analysis result."""
+    themes = data.get("themes", [])
+    sent = data.get("sentiment", {}) or {}
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), gridspec_kw={"width_ratios": [2, 1]})
+
+    if themes:
+        labels = [t.get("theme", "") for t in themes][::-1]
+        vals = [t.get("mentions", 0) for t in themes][::-1]
+        axes[0].barh(labels, vals, color=_ACCENT)
+        axes[0].set_xlabel("Mentions")
+    else:
+        axes[0].text(0.5, 0.5, "No themes", ha="center", va="center")
+        axes[0].axis("off")
+    axes[0].set_title(f"Top themes — {column}", fontsize=11)
+    for spine in ["top", "right"]:
+        axes[0].spines[spine].set_visible(False)
+
+    order = ["positive", "neutral", "negative"]
+    colors = {"positive": "#0d9488", "neutral": _MUTED, "negative": "#dc2626"}
+    svals = [sent.get(k, 0) for k in order]
+    if sum(svals) > 0:
+        axes[1].pie(svals, labels=[k.title() for k in order], autopct="%1.0f%%",
+                    colors=[colors[k] for k in order], wedgeprops={"edgecolor": "white"})
+    else:
+        axes[1].text(0.5, 0.5, "No sentiment", ha="center", va="center")
+        axes[1].axis("off")
+    axes[1].set_title("Sentiment", fontsize=11)
+    return _fig_to_bytes(fig)
+
+
 def segment_stats(df: pd.DataFrame, group_col: str, metric_col: str) -> ToolResult:
     grouped = (
         df.groupby(group_col)[metric_col]
