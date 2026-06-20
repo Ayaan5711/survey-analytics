@@ -31,6 +31,7 @@ def inflation_df():
 def test_rank_groups_by_value_picks_top(inflation_df):
     result = dispatch_tool(inflation_df, "rank_groups_by_value", {
         "group_col": "City", "target_col": "FoodExpectation", "target_value": "Price increase",
+        "min_n": 1,
     })
     assert result.tool_name == "rank_groups_by_value"
     # Mumbai: 2/3 = 66.7%, Delhi: 1/2 = 50%, Pune: 0/1 = 0% → Mumbai is top
@@ -38,6 +39,57 @@ def test_rank_groups_by_value_picks_top(inflation_df):
     assert isinstance(result.table, list)
     assert result.table[0]["City"] == "Mumbai"
     assert result.table[0]["pct"] == pytest.approx(66.7, abs=0.1)
+
+
+def test_rank_groups_min_n_excludes_small_groups(inflation_df):
+    # With min_n=3 only Mumbai qualifies (3 rows); Delhi(2)/Pune(1) excluded.
+    result = dispatch_tool(inflation_df, "rank_groups_by_value", {
+        "group_col": "City", "target_col": "FoodExpectation",
+        "target_value": "Price increase", "min_n": 3,
+    })
+    cities = {r["City"] for r in result.table}
+    assert cities == {"Mumbai"}
+
+
+def test_rank_normalizes_whitespace_in_value():
+    df = pd.DataFrame({
+        "City": ["A", "A", "B", "B", "B"],
+        "Rate": [">=16 %", "< 1%", ">=16 %", ">=16 %", "< 1%"],
+    })
+    # Query with no space should still match ">=16 %" in the data.
+    result = dispatch_tool(df, "rank_groups_by_value", {
+        "group_col": "City", "target_col": "Rate", "target_value": ">=16%", "min_n": 1,
+    })
+    assert "B" in result.summary  # B: 2/3 vs A: 1/2
+
+
+def test_compare_expectations_by_segment():
+    df = pd.DataFrame({
+        "Gender": ["M", "M", "F", "F", "F"],
+        "Food(Q11)": [
+            "Price increase more than current rate", "No change in prices",
+            "Price increase more than current rate", "Decline in prices",
+            "Price increase more than current rate",
+        ],
+    })
+    result = dispatch_tool(df, "compare_expectations_by_segment", {"segment_col": "Gender"})
+    assert result.tool_name == "compare_expectations_by_segment"
+    by_seg = {r["segment"]: r for r in result.table}
+    # Female: 2 of 3 picked 'more than current rate' = 66.7%
+    assert by_seg["F"]["respondents"] == 3
+    food_key = [k for k in by_seg["F"] if "Food" in k][0]
+    assert by_seg["F"][food_key] == pytest.approx(66.7, abs=0.1)
+
+
+def test_compare_expectations_bins_numeric_age():
+    df = pd.DataFrame({
+        "Age": [20, 30, 40, 50, 60],
+        "General(Q11)": ["No change in prices"] * 5,
+    })
+    result = dispatch_tool(df, "compare_expectations_by_segment", {"segment_col": "Age"})
+    segs = {r["segment"] for r in result.table}
+    assert segs <= {"18-24", "25-34", "35-44", "45-54", "55+"}
+    assert "25-34" in segs
 
 
 def test_filter_profile_subsets_and_profiles(inflation_df):

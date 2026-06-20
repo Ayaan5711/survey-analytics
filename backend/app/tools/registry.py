@@ -1,5 +1,6 @@
 from __future__ import annotations
 import io
+import re
 from dataclasses import dataclass, field
 from typing import Any
 import matplotlib
@@ -21,7 +22,7 @@ class ToolResult:
 
 TOOL_NAMES = ["segment_stats", "distribution", "pie_chart", "crosstab", "anomalies",
               "threshold_count", "rank_groups_by_value", "filter_profile",
-              "list_filtered_values", "pivot_table"]
+              "list_filtered_values", "pivot_table", "compare_expectations_by_segment"]
 
 _CAVEAT_MIN_N = 30
 
@@ -235,41 +236,78 @@ def threshold_count(df: pd.DataFrame, column: str, threshold: float, operator: s
                       png_bytes=png)
 
 
+def _norm(value) -> str:
+    """Normalize a cell/value for robust matching: remove ALL whitespace and
+    lowercase. Handles label quirks like '>=16 %' vs '>=16%' and '8-9%' vs '8-9 %'."""
+    return re.sub(r"\s+", "", str(value)).lower()
+
+
 def _build_mask(series: pd.Series, value, op: str) -> pd.Series:
     """Boolean mask for a column condition. Supports numeric comparisons and
-    string equality / substring match, coercing types as needed."""
+    string equality / substring match, with whitespace-normalized matching."""
     if op in ("gt", "lt", "gte", "lte"):
         num = pd.to_numeric(series, errors="coerce")
         v = float(value)
         return {"gt": num > v, "lt": num < v, "gte": num >= v, "lte": num <= v}[op]
-    s = series.astype(str).str.strip()
-    target = str(value).strip()
+    s = series.map(_norm)
+    target = _norm(value)
     if op == "ne":
-        return s.str.lower() != target.lower()
+        return s != target
     if op == "contains":
-        return s.str.contains(target, case=False, na=False)
-    # default: case-insensitive equality
-    return s.str.lower() == target.lower()
+        return s.str.contains(re.escape(target), na=False)
+    # default: normalized equality
+    return s == target
+
+
+# Standard age groups used when a numeric age column is segmented.
+_AGE_BINS = [17, 24, 34, 44, 54, 200]
+_AGE_LABELS = ["18-24", "25-34", "35-44", "45-54", "55+"]
+
+# Canonical inflation-expectation response labels.
+_PRICE_INCREASE_MORE = "Price increase more than current rate"
+_EXPECTATION_LABELS = {_norm(x) for x in {
+    "Price increase more than current rate",
+    "Price increase similar to current rate",
+    "Price increase less than current rate",
+    "No change in prices",
+    "Decline in prices",
+}}
+
+
+def _bin_segment(df: pd.DataFrame, segment_col: str) -> pd.Series:
+    """Return the segment series, binning numeric age-like columns into age groups."""
+    s = df[segment_col]
+    if pd.api.types.is_numeric_dtype(s) and "age" in segment_col.lower():
+        return pd.cut(pd.to_numeric(s, errors="coerce"), bins=_AGE_BINS, labels=_AGE_LABELS)
+    return s
 
 
 def rank_groups_by_value(
-    df: pd.DataFrame, group_col: str, target_col: str, target_value: str, top_n: int = 15,
+    df: pd.DataFrame, group_col: str, target_col: str, target_value: str,
+    top_n: int = 15, min_n: int = 5, match_mode: str = "eq",
 ) -> ToolResult:
     """For a specific response value, rank each group by the share that selected it.
 
     Answers 'which city/state/segment has the highest % of <response>?' deterministically.
+    Groups with fewer than `min_n` respondents are excluded from ranking to avoid
+    small-sample outliers (matching the survey's stated n>=5 rule). `match_mode` is
+    'eq' (exact, normalized) or 'contains' (substring).
     """
-    sub = df[[group_col, target_col]].dropna(subset=[group_col])
-    group_total = sub.groupby(group_col)[target_col].size()
-    match_mask = _build_mask(sub[target_col], target_value, "eq")
-    match_total = sub[match_mask].groupby(group_col)[target_col].size()
+    seg = _bin_segment(df, group_col)
+    # Denominator = respondents who answered this question (drop rows missing either).
+    work = pd.DataFrame({group_col: seg, target_col: df[target_col]}).dropna(subset=[group_col, target_col])
+    group_total = work.groupby(group_col, observed=True)[target_col].size()
+    match_mask = _build_mask(work[target_col], target_value, "contains" if match_mode == "contains" else "eq")
+    match_total = work[match_mask].groupby(group_col, observed=True)[target_col].size()
 
     res = pd.DataFrame({"matched": match_total, "total": group_total}).fillna(0)
     res["matched"] = res["matched"].astype(int)
     res["total"] = res["total"].astype(int)
     res["pct"] = (res["matched"] / res["total"] * 100).where(res["total"] > 0, 0).round(1)
-    res = res.sort_values("pct", ascending=False)
-    res_top = res.head(top_n)
+    ranked = res[res["total"] >= min_n].sort_values("pct", ascending=False)
+    if ranked.empty:                       # fall back to all groups if none meet min_n
+        ranked = res.sort_values("pct", ascending=False)
+    res_top = ranked.head(top_n)
 
     fig, ax = plt.subplots(figsize=(8, max(3, 0.4 * len(res_top) + 1)))
     ax.barh([str(i) for i in res_top.index][::-1], res_top["pct"].values[::-1], color=_ACCENT)
@@ -283,17 +321,18 @@ def rank_groups_by_value(
         {group_col: str(idx), "matched": int(r["matched"]), "total": int(r["total"]), "pct": float(r["pct"])}
         for idx, r in res_top.iterrows()
     ]
-    if len(res) and res.iloc[0]["total"] > 0:
-        top_group = res.index[0]
+    if len(ranked) and ranked.iloc[0]["total"] > 0:
+        top_group = ranked.index[0]
         summary = (f"Highest share of '{target_value}' in {target_col}: '{top_group}' "
-                   f"at {res.iloc[0]['pct']}% ({int(res.iloc[0]['matched'])}/{int(res.iloc[0]['total'])})")
+                   f"at {ranked.iloc[0]['pct']}% ({int(ranked.iloc[0]['matched'])}/{int(ranked.iloc[0]['total'])}; "
+                   f"groups with <{min_n} respondents excluded)")
     else:
         summary = f"No respondents selected '{target_value}' in {target_col}."
-    min_total = int(res_top["total"].min()) if len(res_top) else 0
-    caveat = (f"Smallest ranked group has only {min_total} respondents — interpret shares with care."
-              if min_total < _CAVEAT_MIN_N else None)
+    caveat = (f"Only groups with at least {min_n} respondents were ranked."
+              if len(res) > len(ranked) else None)
     return ToolResult(tool_name="rank_groups_by_value",
-                      params={"group_col": group_col, "target_col": target_col, "target_value": target_value},
+                      params={"group_col": group_col, "target_col": target_col,
+                              "target_value": target_value, "min_n": min_n, "match_mode": match_mode},
                       summary=summary, table=table, png_bytes=png, caveat=caveat)
 
 
@@ -402,6 +441,92 @@ def pivot_table(
                       summary=summary, table=table, png_bytes=png)
 
 
+def _detect_expectation_columns(df: pd.DataFrame) -> list[str]:
+    """Columns whose values are predominantly inflation-expectation labels."""
+    cols = []
+    for c in df.columns:
+        s = df[c].dropna()
+        if s.empty:
+            continue
+        sample = s.astype(str).map(_norm)
+        hits = sample.isin(_EXPECTATION_LABELS).mean()
+        if hits >= 0.5:
+            cols.append(c)
+    return cols
+
+
+def compare_expectations_by_segment(
+    df: pd.DataFrame, segment_col: str, target_value: str = _PRICE_INCREASE_MORE,
+    expectation_cols: list[str] | None = None,
+) -> ToolResult:
+    """Compare inflation expectations across a segment (gender, age group, income, …).
+
+    For each segment value, reports respondent count, sample share, and the share
+    selecting `target_value` ('price increase more than current rate' by default)
+    for every expectation column. Reproduces the Q1-5 multi-metric comparison.
+    Numeric age columns are auto-binned into age groups.
+    """
+    cols = expectation_cols or _detect_expectation_columns(df)
+    if not cols:
+        raise ValueError("No inflation-expectation columns detected in this dataset.")
+
+    seg = _bin_segment(df, segment_col)
+    work = df.copy()
+    work["__seg__"] = seg
+    work = work.dropna(subset=["__seg__"])
+    total_n = len(work)
+
+    rows: list[dict] = []
+    for seg_val, g in work.groupby("__seg__", observed=True):
+        n = len(g)
+        if n == 0:
+            continue
+        row = {"segment": str(seg_val), "respondents": n,
+               "sample_share": round(n / total_n * 100, 1) if total_n else 0}
+        for c in cols:
+            s = g[c].dropna()
+            share = round(_build_mask(s, target_value, "eq").mean() * 100, 1) if len(s) else 0.0
+            row[_short_label(c)] = share
+        rows.append(row)
+    rows.sort(key=lambda r: r["respondents"], reverse=True)
+
+    # Chart: grouped bars of each segment's share for the first few expectation metrics.
+    metric_cols = [_short_label(c) for c in cols][:6]
+    fig, ax = plt.subplots(figsize=(9, 5))
+    seg_labels = [r["segment"] for r in rows]
+    x = np.arange(len(seg_labels))
+    width = 0.8 / max(len(metric_cols), 1)
+    cmap = plt.get_cmap("viridis")
+    colors = [cmap(v) for v in np.linspace(0.15, 0.85, max(len(metric_cols), 1))]
+    for j, m in enumerate(metric_cols):
+        ax.bar(x + j * width, [r.get(m, 0) for r in rows], width, label=m,
+               color=colors[j], edgecolor="white", linewidth=0.5)
+    ax.set_xticks(x + width * (len(metric_cols) - 1) / 2)
+    ax.set_xticklabels(seg_labels, rotation=20, ha="right")
+    ax.set_ylabel(f"% '{target_value}'")
+    ax.set_title(f"Inflation expectations by {segment_col}", fontsize=12)
+    ax.legend(fontsize=7, ncol=2)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    png = _fig_to_bytes(fig)
+
+    summary = (f"Inflation expectations ('{target_value}') by {segment_col} across "
+               f"{len(cols)} metrics and {len(rows)} segments.")
+    min_n = min((r["respondents"] for r in rows), default=0)
+    caveat = f"Smallest segment has only {min_n} respondents." if min_n < _CAVEAT_MIN_N else None
+    return ToolResult(tool_name="compare_expectations_by_segment",
+                      params={"segment_col": segment_col, "target_value": target_value},
+                      summary=summary, table=rows, png_bytes=png, caveat=caveat)
+
+
+def _short_label(col: str) -> str:
+    """Shorten verbose survey headers like 'Q11_2_Food Products(Q11)' → 'Q11 Food Products'."""
+    m = re.match(r"(Q\d+)_\d+_(.+?)\(Q\d+\)$", col)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    return col
+
+
 _DISPATCH = {
     "segment_stats": segment_stats,
     "distribution": distribution,
@@ -413,6 +538,7 @@ _DISPATCH = {
     "filter_profile": filter_profile,
     "list_filtered_values": list_filtered_values,
     "pivot_table": pivot_table,
+    "compare_expectations_by_segment": compare_expectations_by_segment,
 }
 
 
