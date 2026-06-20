@@ -121,6 +121,11 @@ function buildShell() {
 <div id="canvas-panel">
   <div id="canvas-header">
     <span id="canvas-title">Chart</span>
+    <div id="canvas-zoom">
+      <button onclick="zoomOut()" title="Zoom out">−</button>
+      <button onclick="zoomReset()" title="Reset zoom">⟳</button>
+      <button onclick="zoomIn()" title="Zoom in">+</button>
+    </div>
     <button id="btn-close-canvas" onclick="closeCanvas()">×</button>
   </div>
   <div id="canvas-body"><img id="canvas-img" src="" alt=""></div>
@@ -625,17 +630,58 @@ async function exportPdf() {
   finally { if (btn) btn.textContent = 'Export PDF Report'; }
 }
 
-// ── Canvas panel ───────────────────────────────────────────────────────────
+// ── Canvas panel (with zoom + pan) ───────────────────────────────────────────
 let _canvasCurrentSrc = '';
 let _canvasCurrentTitle = '';
+const _zoom = { scale: 1, x: 0, y: 0, dragging: false, sx: 0, sy: 0 };
 
-function bindCanvas() {}
+function bindCanvas() {
+  const body = $('canvas-body');
+  if (!body) return;
+  // Wheel to zoom toward the pointer.
+  body.addEventListener('wheel', e => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    _zoom.scale = Math.min(8, Math.max(1, _zoom.scale * factor));
+    if (_zoom.scale === 1) { _zoom.x = 0; _zoom.y = 0; }
+    applyZoom();
+  }, { passive: false });
+  // Drag to pan when zoomed in.
+  body.addEventListener('pointerdown', e => {
+    if (_zoom.scale <= 1) return;
+    _zoom.dragging = true; _zoom.sx = e.clientX - _zoom.x; _zoom.sy = e.clientY - _zoom.y;
+    body.setPointerCapture(e.pointerId);
+  });
+  body.addEventListener('pointermove', e => {
+    if (!_zoom.dragging) return;
+    _zoom.x = e.clientX - _zoom.sx; _zoom.y = e.clientY - _zoom.sy; applyZoom();
+  });
+  body.addEventListener('pointerup', () => { _zoom.dragging = false; });
+  // Double-click toggles 1x ↔ 2x.
+  body.addEventListener('dblclick', () => {
+    _zoom.scale = _zoom.scale > 1 ? 1 : 2; _zoom.x = 0; _zoom.y = 0; applyZoom();
+  });
+}
+
+function applyZoom() {
+  const img = $canvasImg();
+  if (!img) return;
+  img.style.transform = `translate(${_zoom.x}px, ${_zoom.y}px) scale(${_zoom.scale})`;
+  img.style.cursor = _zoom.scale > 1 ? 'grab' : 'default';
+  const body = $('canvas-body');
+  if (body) body.classList.toggle('zoomed', _zoom.scale > 1);
+}
+
+function zoomIn()  { _zoom.scale = Math.min(8, _zoom.scale * 1.25); applyZoom(); }
+function zoomOut() { _zoom.scale = Math.max(1, _zoom.scale / 1.25); if (_zoom.scale === 1) { _zoom.x = 0; _zoom.y = 0; } applyZoom(); }
+function zoomReset() { _zoom.scale = 1; _zoom.x = 0; _zoom.y = 0; applyZoom(); }
 
 function openCanvas(title, src) {
   _canvasCurrentSrc = src;
   _canvasCurrentTitle = title;
   $canvasTitle().textContent = title;
   $canvasImg().src = src;
+  zoomReset();
   $canvasPanel().classList.add('open');
 }
 
