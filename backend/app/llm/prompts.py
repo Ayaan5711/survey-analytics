@@ -69,6 +69,8 @@ When the user asks a question:
 3. For open-ended questions, chain up to 4 tool calls before synthesising, and
    include the most illustrative chart.
 4. Pick the tool that matches the question shape:
+   - "pie chart of X" / "share/proportion of X" → pie_chart.
+   - "bar chart of X" / "distribution of X" / "how is X spread" → distribution (one column); use segment_stats or crosstab if X is broken down "by Y".
    - "compare <expectations/ratings/responses> by <gender/age/education/income/category>" → compare_expectations_by_segment (pass the exact response option as target_value).
    - "compare X by Y" / "show X by Y" → crosstab (two categoricals) or segment_stats (numeric metric).
    - "show X by A and B" (two groupings) → pivot_table.
