@@ -272,6 +272,46 @@ Real surveys are messy: column names like `Q11_2_Food Products(Q11)`, values lik
 
 ---
 
+## 8b. Feature → where it comes from (codebase map)
+
+🟢 **In plain words:** this table tells anyone exactly which file does what, so a reviewer can jump straight to the code behind any feature.
+
+🔧 **Technical detail** — paths are under `backend/app/` unless noted.
+
+| Feature / capability | Frontend | API route (`api/`) | Core logic | Notes |
+|---|---|---|---|---|
+| **File upload + sheet pick** | `frontend/app.js` (`uploadFile`, sheet picker) | `upload.py` (`/upload`, `/upload/sheet`) | `data/loader.py` | Multi-sheet Excel → HTTP 409 with sheet names |
+| **Type detection** (numeric/categorical/open-text/datetime) | — | — | `data/loader.py` (`detect_column_type`) | cardinality + text-length heuristics |
+| **Dataset profile** (stats, sample) | — | — | `data/profiler.py` (`build_profile`, `load_profile`) | written to `profile.json`; only thing sent to LLM |
+| **Data-quality flags** | dashboard render in `app.js` | served via `dashboard.py` | `data/quality.py` (`check_quality`) | duplicates, empty/constant cols, fuzzy categories (rapidfuzz) |
+| **Auto dashboard** (cards, charts, narrative) | `app.js` (`renderDashboard`) | `dashboard.py` (`/sessions/{id}/dashboard`) | `dashboard/charts.py`, `dashboard/generator.py` | narrative cached as `narrative.txt` |
+| **Insight feed** | `app.js` (dashboard) | `insights.py` (`/sessions/{id}/insights`) | `insights/generator.py` | background sweep; one batched LLM call |
+| **Chat orchestration (the agent)** | `app.js` (`sendMessage`) | `chat.py` (`/sessions/{id}/chat`) | `llm/agent.py` (`ChatAgent.run`) | 4-step tool loop + synthesis |
+| **LLM client + model routing** | — | — | `llm/client.py` | `deployment_primary` vs `deployment_fallback` |
+| **Prompts + tool schemas** | — | — | `llm/prompts.py` (`chat_system_prompt`, `tool_definitions`, `synthesis_prompt`, `code_gen_prompt`) | the LLM-facing "menu" + routing rules |
+| **Tier-1 analysis tools** | rendered as chart+table in `app.js` | via `chat.py` | `tools/registry.py` | see tool list below |
+| **Argument fuzzy-resolution** | — | — | `tools/registry.py` (`_resolve_params`, `_resolve_column`, `_resolve_value`, `_norm`) | "City"→"Q4_City", ">=16%"→">=16 %" |
+| **Tier-2 sandbox code-gen** | "Show code" toggle in `app.js` | via `chat.py` | `sandbox/ast_check.py`, `sandbox/runner.py` | AST whitelist + multiprocessing rlimits + retry |
+| **Deterministic data tables in chat** | `app.js` (`renderTable`) | `chat.py` | `tools/registry.py` (ToolResult.table) | exact numbers, persisted on the message |
+| **Open-text themes + sentiment** | chart in `app.js` | via `chat.py` (`open_text_themes`) | `opentext/analyzer.py` + `tools/registry.py` (`render_open_text_chart`) | cheap model, cached per column |
+| **Question caching** | transparent | `chat.py` (`_cache_path`, `_read_cache`, `_write_cache`) | disk under `qcache/` | key = data version + normalized question |
+| **Pinned charts** | `app.js` (`pinChart`, `unpinChart`) | `chat.py` (`/pins` GET/POST/DELETE) | DB `PinnedChart` + PNG on disk | per-session folder |
+| **Chart canvas + zoom/pan** | `app.js` (`openCanvas`, `bindCanvas`, `applyZoom`) + `styles.css` | — | frontend only | wheel-zoom, +/−/reset, drag-pan |
+| **Compare mode** | `app.js` (compare bar, `viewDiff`, `showDiffModal`) | `compare.py` (`/compare`) | `compare/engine.py` (`compare_profiles`) | diff cached; summary fed to agent |
+| **Story/PDF export** | `app.js` (`exportPdf`) | `export.py` (`/sessions/{id}/export/pdf`) | `reports/composer.py`, `reports/renderer.py` | fpdf2; pins + insights |
+| **Sessions list / delete** | `app.js` (sidebar) | `sessions.py` (`/sessions`, `/sessions/{id}`) | DB `Session` (cascade delete) | — |
+| **Persistence / migrations** | — | — | `db/models.py`, `db/database.py` | SQLite + additive auto-migration |
+| **App wiring / static serving / logging** | served from `frontend/` | — | `main.py`, `config.py` | routers mounted under `/api`; frontend at `/` |
+
+**Tier-1 tools in `tools/registry.py` (one function each):**
+`segment_stats`, `distribution`, `pie_chart`, `crosstab`, `anomalies`, `threshold_count`, `rank_groups_by_value`, `filter_profile`, `list_filtered_values`, `pivot_table`, `compare_expectations_by_segment` — each returns a `ToolResult` (summary + exact table + PNG + caveat).
+
+**Which features call the LLM (cost) vs pure code (free):**
+- **LLM-backed:** dashboard narrative (1 call), insight phrasing (1 batched call), chat planning (cheap model), chat synthesis (primary), Tier-2 code-gen (primary, +1 retry), open-text themes (cheap, cached).
+- **Pure code (no LLM):** all Tier-1 tools, profiling, quality checks, fuzzy resolution, caveats, comparison diff, caching, dashboard charts, PDF export.
+
+---
+
 ## 9. Where everything is stored (and isolation)
 
 🟢 **In plain words**
