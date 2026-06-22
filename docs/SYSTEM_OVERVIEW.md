@@ -132,6 +132,106 @@ flowchart TD
 
 ---
 
+## 5b. DEEP DIVE — exactly how the agent works (for engineers)
+
+This section is the "weak spot" filled in: the precise mechanics of *what the agent is, what a tool is, and how a turn executes*. All references are to real code in `backend/app/`.
+
+### 5b.1 What "the agent" actually is
+The agent is **not** an autonomous loop with memory. It's a single function — `ChatAgent.run()` in `app/llm/agent.py` — that runs **per question** and is **stateless between turns**. Conversation continuity comes from the frontend replaying the last ~20 messages as `history`. Each turn:
+
+1. Builds the message list: `[system_prompt(profile)] + history + [user_message]`.
+2. Loads the session's data: `df = pd.read_parquet(parquet_path)` (full data, in-process).
+3. Runs a **bounded tool-calling loop** (max 4 steps) against the **fallback/cheap** model.
+4. Runs **one synthesis call** against the **primary** model to produce the narrative + follow-ups (as JSON).
+
+### 5b.2 What "a tool" actually is
+Two distinct meanings, deliberately kept separate:
+
+- **The LLM-facing tool schema** (`prompts.tool_definitions()`): OpenAI function-calling JSON — name, description, JSON-schema parameters. This is the *menu* the model sees. The model never runs anything; it only emits a structured request like:
+  ```json
+  {"name": "rank_groups_by_value",
+   "arguments": {"group_col": "City", "target_col": "Food Products",
+                 "target_value": "price increase more than current rate"}}
+  ```
+- **The executor** (`tools/registry.py`): the real Python function (`rank_groups_by_value(df, ...)`) that does pandas math and returns a `ToolResult`:
+  ```python
+  @dataclass
+  class ToolResult:
+      tool_name: str
+      params: dict
+      summary: str            # one-line factual result (fed back to the LLM)
+      table: list | dict      # exact numbers (shown to the user, NOT recomputed by LLM)
+      png_bytes: bytes | None # the chart
+      caveat: str | None      # e.g. "smallest group has only 4 respondents"
+  ```
+The model picks from the *menu*; our code runs the *executor*. **The LLM never sees raw rows and never produces numbers** — it only sees each tool's one-line `summary` (truncated to 2000 chars) as feedback.
+
+### 5b.3 The turn lifecycle, step by step
+
+```mermaid
+sequenceDiagram
+    participant API as /chat endpoint
+    participant AG as ChatAgent.run
+    participant LLM1 as LLM (fallback model)
+    participant EX as _execute / dispatch_tool
+    participant PD as pandas / sandbox
+    participant LLM2 as LLM (primary model)
+
+    API->>AG: profile, parquet_path, message, history
+    AG->>PD: df = read_parquet(...)
+    loop up to 4 steps
+        AG->>LLM1: messages + tool schemas (tool_choice=auto)
+        alt model returns finish_reason = "tool_calls"
+            LLM1-->>AG: tool name + JSON args
+            AG->>EX: _execute(name, args, df, ...)
+            EX->>PD: run tool / sandbox code
+            PD-->>EX: ToolResult (summary, table, png, caveat)
+            AG->>LLM1: append {role:"tool", content: summary}
+        else finish_reason = "stop"
+            LLM1-->>AG: no more tools → break loop
+        end
+    end
+    AG->>LLM2: synthesis_prompt(message, tool_summaries) → JSON
+    LLM2-->>AG: {narrative, follow_ups[]}
+    AG-->>API: ChatResponse(content, chart, table, follow_ups, caveats, code)
+```
+
+Key facts an engineer will want:
+- **Two model roles per turn.** Planning/tool-selection uses `llm.deployment_fallback` (cheap); synthesis and any code-gen use `llm.deployment_primary`. (`agent.py:62`, `agent.py:103`.)
+- **Function-calling, not prompt-parsing.** We pass `tools=tool_definitions(), tool_choice="auto"`. The model's tool requests come back as structured `tool_calls`, parsed with `json.loads(tc.function.arguments)`.
+- **Tool results are fed back** as `{"role": "tool", "tool_call_id": ..., "content": summary}` so the model can chain (e.g., run 3 segment stats, then stop). This is what enables open-ended questions ("what's driving low satisfaction?") to do multiple tool calls before synthesizing.
+- **The loop is bounded** at `_MAX_STEPS = 4` — a hard cap on tool calls per question (cost/latency guardrail).
+- **Only the *last* chart/table is returned** to the UI; all tool `summary`s are accumulated and handed to the synthesis call so the narrative can reference everything found.
+
+### 5b.4 Inside `_execute` — the three dispatch paths
+`_execute(name, params, df, parquet_path, profile, message)` routes to one of three handlers:
+
+1. **`open_text_themes`** → calls `analyze_open_text()` (LLM, cheap model, cached per column), renders a themes-bar + sentiment-pie, returns themes table.
+2. **`generate_code`** (Tier 2) → `run_code(code, parquet_path)` in the sandbox. **If it fails or produces no chart**, it makes **one** primary-model repair call (`code_gen_prompt` with the traceback), strips code fences, re-runs once. Two failures → friendly error + the code shown.
+3. **Everything else** (Tier 1) → `dispatch_tool(df, name, params)` → a `ToolResult`. The PNG is base64'd into the chart; the `table` becomes the user-visible exact-numbers table; the `caveat` is attached.
+
+### 5b.5 Argument resolution (why messy column names still work)
+Before any Tier-1 tool runs, `dispatch_tool` calls `_resolve_params()`:
+- **Column args** (`group_col`, `target_col`, `column`, `value_cols`, …) → `_resolve_column()`: exact match → whitespace/case-normalized → unique substring → `rapidfuzz` (≥75 score). So `"City"` → `"Q4_City"`, `"Food Products"` → `"Q11_2_Food Products(Q11)"`.
+- **Value args** (`target_value`, `filter_value`) for equality matching → `_resolve_value()`: snaps `"price increase more than current"` → the exact label, and `">=16%"` → `">=16 %"` (whitespace-insensitive via `_norm`, which strips *all* whitespace).
+This is the layer that makes the LLM's "good enough" guesses resolve to real schema, and it's pure code (no extra LLM calls).
+
+### 5b.6 The sandbox (Tier 2 internals)
+`app/sandbox/`:
+- **Static check first** (`ast_check.py`): parse the code to an AST; reject any import outside `{pandas, numpy, matplotlib, seaborn, plotly, math, time}`, any name in `{os, sys, open, eval, exec, __import__, …}`, and any dunder attribute access. Fail-closed before execution.
+- **Isolated execution** (`runner.py`): a separate `multiprocessing.Process` with a `Pipe`; on Linux it sets `RLIMIT_CPU` (10s) and `RLIMIT_AS` (512 MB); a 15s wall-clock `poll` then `terminate()` as a hard stop. The child loads the Parquet itself and exposes `df, pd, np, plt, io`; the contract is that the code assigns `result_png` / `result_plotly` / `result_summary`.
+
+### 5b.7 Worked example — "which city has the highest % expecting food price increases?"
+1. Planning model emits a tool call: `rank_groups_by_value(group_col="City", target_col="Food Products", target_value="price increase more than current rate")`.
+2. `_resolve_params` rewrites → `group_col="Q4_City"`, `target_col="Q11_2_Food Products(Q11)"`, value snapped to the exact label.
+3. Executor computes per-city share, drops groups with n<5, sorts → `ToolResult(summary="… 'Chennai' at 60.0% (3/5) …", table=[…per-city rows…], png=…)`.
+4. Loop sees the model `stop`; synthesis (primary model) turns the `summary` into a sentence + 3 follow-ups.
+5. Endpoint returns chart + exact table + narrative, persists the assistant message, and writes the question cache.
+
+**The number "60% (3/5)" is computed in pandas — the LLM only worded it.** That is the central correctness guarantee of the whole system.
+
+---
+
 ## 6. The two "tiers" of analysis
 
 🟢 **In plain words**
