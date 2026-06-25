@@ -368,3 +368,124 @@ Each uploaded survey is its own "session" with its own folder. Charts, caches, a
 ## 13. One-paragraph summary for the busiest person in the room
 
 🟢 A user uploads a survey file. The system profiles it (privately, on our servers), shows an instant dashboard, and lets them ask questions in plain English. An AI **decides which calculation to run**, but the **calculations themselves are done by code on the real data**, so every number is exact and trustworthy. It's designed to be cheap (tiny AI prompts + heavy caching), safe (sandboxed custom code, per-survey isolation), and to work on any survey of any size. It was validated against a real survey's official answer key and matched exactly.
+
+---
+
+## 14. Question handling — every possible path (what happens when it ISN'T a tool)
+
+🟢 **In plain words:** there is no "unhandled" case. Every question ends as either a built-in calculation, AI-written code run safely, a direct text answer, or a polite "please rephrase." The system never silently does nothing.
+
+🔧 **The single control point:** every turn calls the planning model with `tool_choice="auto"` (`agent.py`). On each step the model does exactly one of three things: (1) call a built-in tool, (2) call `generate_code` (the catch-all), or (3) answer in text (`finish_reason="stop"`). "Not in a tool" therefore resolves to (2) if it's computable, or (3) if it isn't.
+
+```text
+Question
+  ├─ identical to a prior one? ──────────────► serve from cache (no LLM)
+  └─ else → planning model (tool_choice=auto)
+        ├─ picks a built-in tool ────────────► pandas computes → chart+table     (Cat 1/2)
+        ├─ picks generate_code ──────────────► sandbox runs code (+1 repair retry) (Cat 3)
+        │        └─ still fails ─────────────► friendly "couldn't render" + code shown
+        └─ answers in text (no tool) ────────► narrative only                     (Cat 4/5)
+                 └─ referenced a bad column ─► caught → "try rephrasing"
+```
+
+| Category | Example | Path | Output |
+|---|---|---|---|
+| **1. Direct tool match** | "pie chart of gender", "which city has highest food price increase?" | model emits tool name+args → `dispatch_tool` (fuzzy-resolves) → pandas → `ToolResult` | chart + exact table + sentence |
+| **2. Open-ended / "why"** | "what's driving low satisfaction?" | chains up to **4** tool calls, each result fed back, then synthesis | several findings → one narrative + best chart |
+| **3. Computable but no tool fits** *(the "not in a tool" case)* | "scatter of age vs income by gender", "rolling 3-month average" | model calls **`generate_code`** → AST-checked, sandboxed run; on failure **1 repair retry** with the traceback | custom chart + "Show code"; or graceful error + code |
+| **4. Fact, no chart needed** | "how many rows?", "is satisfaction numeric?" | model answers from the **profile** and stops (no tool) | text answer |
+| **5. Not answerable from data** | "suggest a new survey question", or a non-existent column | advisory → plain text; bad column → tool raises `KeyError` → caught in `chat.py` | text answer, or "Analysis failed — try rephrasing" |
+| **6. Repeated question** | same question again | short-circuited **before** the model | cached answer, `cached:true`, no LLM |
+
+**Why this is safe to claim:** `generate_code` is a catch-all for anything expressible in pandas/matplotlib on the dataframe, so the vast majority of "no named tool" questions still produce a real, computed chart. Only questions that aren't about the data fall to a plain text answer. Honest edges: the loop caps at **4 tool calls/turn**; `generate_code` is the least-deterministic path (hence primary model + retry); truly out-of-scope asks get text, not a chart — by design.
+
+---
+
+## 15. Scaling — how it works at 1M rows (and beyond)
+
+🟢 **In plain words:** big files don't make the AI part more expensive, because the AI only ever sees a small summary. The actual math runs on our server, and that scales with normal computing power, not AI cost.
+
+🔧 **Technical detail**
+- **The LLM side is O(1) in data size.** The prompt carries only the profile (a few KB) — a 1M-row and a 10K-row file produce near-identical prompts → same cost/latency for planning + synthesis.
+- **The compute side scales with the data, cheaply.** Parquet is columnar + compressed; pandas reads a 1M-row Parquet and runs group-bys in well under a second on a normal instance (a few hundred MB RAM). **1M rows works on the current stack as-is — nothing new required.**
+- **The real limit is instance RAM × concurrency**, not the design: each chat turn does `pd.read_parquet()` into memory. Right-size the box and 1M is comfortable.
+- **Beyond ~10M rows or high concurrency:** swap the tool internals to **query the Parquet with DuckDB** (out-of-core SQL over the file) while keeping the exact same `ToolResult` contract — no change to the agent, prompts, or UI. This is a drop-in inside `tools/registry.py`, not a new service.
+
+---
+
+## 16. Production implementation blueprint
+
+🔧 **Technical detail** — what changes when moving from the current single-node setup to production. Note: the **core analysis engine does not change**; only the "front door" (ingestion) and the storage/query backends do.
+
+| Concern | Current (dev/single-node) | Production target | Effort |
+|---|---|---|---|
+| Ingestion | synchronous in the upload request | **async jobs** (Celery/RQ/Arq): upload enqueues → worker converts to Parquet, profiles, runs insights; API returns a job id | medium |
+| Metadata DB | SQLite | **Postgres** (driver swap; `DATABASE_URL` already configurable) | low |
+| File storage | local disk `DATA_DIR` | **object storage** (S3/Azure Blob) behind a small shim | low–med |
+| Query engine | pandas in-process | **DuckDB over Parquet** (out-of-core) for large data | medium |
+| Tier-2 sandbox | `multiprocessing` + rlimits | **container/job isolation** (gVisor/Firecracker/K8s job) | medium |
+| API process | single uvicorn | **stateless pods** behind LB + autoscaling; workers scale separately | low |
+| LLM calls | direct | retry/timeout/rate-limit handling + per-tenant budget | low |
+| **Must-add before exposure** | none | **authentication + multi-tenant isolation** (today: single-user, no auth), PII handling, audit logging, per-tenant cache keys | required |
+
+The design already abstracts `DATA_DIR` and `DATABASE_URL`, so the storage/DB moves are largely config + a shim rather than rewrites.
+
+---
+
+## 17. Production scenario — a ZIP of many large Excel files
+
+🟢 **In plain words:** yes, this is feasible. Once any file is converted to our internal format, everything downstream is already fast and proven. A zip of N files is just N ingestion jobs. The only real bottleneck is that **big Excel files are slow to parse** — but that's a one-time cost per file, after which all analysis is fast.
+
+🔧 **Technical detail**
+
+**What already works in our favor:** the entire analysis engine (profile, tools, charts, 1M-row queries, caching, isolation) operates on **Parquet** — so once each Excel is converted once, it's all proven and efficient. A zip is simply a fan-out of the existing per-file pipeline.
+
+**Minimal, no-new-architecture option:** a thin batch script that **unzips and calls the existing `/api/upload` endpoint once per file**. Each file becomes its own session, reusing 100% of the current pipeline. That's a loop over an endpoint we already have — not new infrastructure.
+
+**Robust production option (batch ingestion pipeline):**
+
+```mermaid
+flowchart TD
+    Z[ZIP path in object storage] --> EX[Stream-extract entry by entry\nguard against zip-bombs]
+    EX --> Q[Enqueue one job per Excel file]
+    Q --> W[Worker pool]
+    W --> CONV[Excel - Parquet via streaming reader\npython-calamine / duckdb / polars]
+    CONV --> PROF[Profile + quality + insights]
+    PROF --> S[(One session per file\n+ batch grouping)]
+    S --> READY[Analysis ready: chat / dashboard / compare]
+```
+
+Challenges and how they're handled:
+1. **Big Excel parsing is the bottleneck** (memory + speed — an openpyxl property, not our design). Use a streaming/faster reader (`python-calamine`, DuckDB/Polars Excel) and convert **once** to Parquet; never re-read the Excel afterward.
+2. **The zip itself:** stream from object storage, extract entry-by-entry to temp (don't load the whole zip into RAM); enforce size/entry limits (zip-bomb guard).
+3. **Many files → many sessions:** natural model is **one file → one session**, with a "batch" grouping in the UI. If several files share a schema and should be analysed together, add an optional **merge step** (concatenate matching Parquets — trivial in DuckDB).
+4. **Multi-sheet Excels** (already handled in-app via the sheet picker) become a batch config: all sheets, or a named one per file.
+5. **Throughput:** a worker pool processes files in parallel; per-file progress so a 200-file zip shows incremental completion.
+
+**Verdict:** feasible. The core engine doesn't change — only the front door (batch ingestion) and, for very large data, the query backend (DuckDB). Effort concentrates in: the job queue, a robust Excel→Parquet converter, object storage, Postgres, and auth/multi-tenancy.
+
+---
+
+## 18. Architecture decision rationale ("why this, why that")
+
+🔧 Quick answers to the most common design challenges. **Everything derives from one principle: _the LLM decides, code computes, and only a tiny profile is ever sent._** Parquet, the tool registry, the sandbox, caching, and flat scaling all fall out of that single choice.
+
+| Question | Answer | Why not the alternative |
+|---|---|---|
+| **Why Parquet?** | Columnar, compressed, **keeps column types**, reads back instantly into pandas/DuckDB. | CSV must be re-parsed and re-typed on every query (slow, error-prone); Parquet is read once, typed forever; ~5–10× smaller. |
+| **Why not a row database for the data?** | Analysis needs **dataframes for stats/charts**, not transactional rows; Parquet-on-disk is the lightest fit. | A row DB + ORM adds infra for zero benefit on a single wide survey table. |
+| **Why send only the profile to the LLM?** | **Cost, privacy, flat scaling** — prompt is a few KB regardless of size; raw responses never leave the server. | Sending rows blows the context window, leaks PII, makes 1M rows impossible. |
+| **Why does the LLM pick the tool but not compute?** | **Determinism & trust** — numbers come from pandas: exact, reproducible, auditable. Validated against the survey's official answer key. | An LLM computing numbers would hallucinate, with no audit trail. |
+| **What tools / what kind of query?** | Single-table **aggregations**: group-by means, cross-tabs, share-rankings, filtered profiles, distributions, threshold counts, pivots. | No joins/warehouse needed — a survey is one wide table; these match the real question shapes. |
+| **Why these specific tools?** | They're a **1:1 map to real question types** (the 19 sample questions drove them). | Generic code-gen alone is unreliable; pre-built tools are fast, free, correct for the common 90%. |
+| **Why a sandbox / code-gen?** | For the **rare custom chart** no tool covers — run safely with import whitelist + CPU/mem/time limits. | Without it unusual requests fail; with raw `exec` it's a security hole. |
+| **Why matplotlib PNG?** | Portable, embeds in chat **and** PDF, no client deps. | Interactive libs add weight; PNG is the safe default (Plotly emitted where zoom matters). |
+| **Why SQLite + local disk?** | Simplest thing for the **current single-node** scope; `DATABASE_URL`/`DATA_DIR` configurable to move later **without code changes**. | Postgres/object-store are a config swap when multi-node is actually needed — not now. |
+| **Why caching?** | Repeated questions + profile/insights/narrative computed **once** — cuts LLM cost and latency. | Recomputing deterministic results wastes money. |
+
+---
+
+## 19. The whole workflow in one paragraph (for AI & architect leads)
+
+A user uploads a messy survey file and the backend parses it, auto-detects each column's type, and builds a compact **dataset profile** (column types, missing %, top values, a tiny sample) which it persists alongside the full data stored as **Parquet**; this profile — never the raw rows — is the only thing ever sent to the LLM, so token cost and latency stay flat whether the file has 10K or 1M rows. The user then chats in plain English, and a **stateless per-question agent** sends the profile + question to a cheap LLM that, via function-calling, **chooses which deterministic pandas tool to run** (rank, crosstab, segment compare, filter-profile, pie/bar, etc.) and with what arguments; our code **fuzzy-resolves** those arguments to the real (often messy) column names and values, **executes the math in pandas on the real data** (the LLM never computes numbers), and returns a chart plus an exact-numbers table; for novel charts the agent instead writes Python that runs in an **AST-whitelisted, resource-limited sandbox** with one automatic repair retry. A final call to the stronger model turns the tool results into a written narrative with follow-up suggestions, and the result — chart, table, code, caveats — is persisted to that session and **cached** so identical questions skip the LLM entirely; everything (profiles, Parquet, charts, caches, chat history, pinned charts, insights, comparisons) is **isolated per session**, and supporting features (auto-dashboard, background insight feed, two-survey comparison, open-text theme/sentiment extraction, PDF export) reuse the same profile-and-tools backbone — giving a system that is cheap (tiny prompts + heavy caching), trustworthy (numbers from code, validated against a real answer key), private (raw data stays server-side), and size-agnostic by design.
+
