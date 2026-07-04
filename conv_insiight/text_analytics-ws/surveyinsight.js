@@ -1,0 +1,560 @@
+﻿﻿/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   SURVEY INSIGHT AGENT â€” Frontend
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+
+const API_BASE = "/TextAnalyticsWebUtility-WS/ConvInsightServlet";
+
+// â”€â”€â”€ STATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+let sessionId      = null;
+let activeSheet    = null;
+let allColumns     = [];       // full column_info array from upload
+let chatHistory    = [];       // {role, text} for export
+let colsExpanded   = false;
+const COL_PREVIEW  = 12;
+
+// â”€â”€â”€ DOM REFS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const excelFile    = document.getElementById("excelFile");
+const uploadBtn    = document.getElementById("uploadBtn");
+const dropZone     = document.getElementById("dropZone");
+const uploadSection= document.getElementById("uploadSection");
+const fileCard     = document.getElementById("fileCard");
+const fcName       = document.getElementById("fcName");
+const fcMeta       = document.getElementById("fcMeta");
+const reUpBtn      = document.getElementById("reUpBtn");
+const statsGrid    = document.getElementById("statsGrid");
+const sheetBlock   = document.getElementById("sheetBlock");
+const sheetTabRow  = document.getElementById("sheetTabRow");
+const colBlock     = document.getElementById("colBlock");
+const colList      = document.getElementById("colList");
+const colBadge     = document.getElementById("colBadge");
+const colShowMore  = document.getElementById("colShowMore");
+const insightBlock = document.getElementById("insightBlock");
+const insightContent = document.getElementById("insightContent");
+const insightSkel  = document.getElementById("insightSkel");
+const dataTypeBadge= document.getElementById("dataTypeBadge");
+const chatLog      = document.getElementById("chatLog");
+const emptyState   = document.getElementById("emptyState");
+const sheetCtx     = document.getElementById("sheetCtx");
+const exportBtn    = document.getElementById("exportBtn");
+const clearBtn     = document.getElementById("clearBtn");
+const suggBar      = document.getElementById("suggBar");
+const suggChips    = document.getElementById("suggChips");
+const chatForm     = document.getElementById("chatForm");
+const msgInput     = document.getElementById("msgInput");
+const sendBtn      = document.getElementById("sendBtn");
+const attachBtn    = document.getElementById("attachBtn");
+const statusMsg    = document.getElementById("statusMsg");
+const mobTabs      = document.getElementById("mobTabs");
+const sidePanel    = document.getElementById("sidePanel");
+const chatPanel    = document.getElementById("chatPanel");
+
+// â”€â”€â”€ HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function escHtml(v) {
+  return String(v)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
+function fmtInline(text) {
+  const e = escHtml(text);
+  return e
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g,     "<em>$1</em>")
+    .replace(/`(.+?)`/g,       "<code>$1</code>");
+}
+
+function numFmt(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+function setLoading(btn, on) {
+  btn.disabled = on;
+  btn.classList.toggle("is-loading", on);
+}
+
+function show(el) { el.hidden = false; }
+function hide(el) { el.hidden = true; }
+
+// â”€â”€â”€ MARKDOWN RENDERER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function parseMarkdownTable(lines, start) {
+  const rows = [];
+  let i = start;
+  while (i < lines.length && lines[i].trim().startsWith("|")) {
+    rows.push(lines[i].trim());
+    i++;
+  }
+  if (rows.length < 2 || !rows[1].includes("---")) return null;
+
+  const cells = l => l.replace(/^\|/,"").replace(/\|$/,"")
+                       .split("|").map(c => c.trim());
+  const headers = cells(rows[0]);
+  const body    = rows.slice(2).map(cells);
+
+  let html = '<div class="table-wrap"><table class="rpt-table"><thead><tr>';
+  headers.forEach(h => { html += `<th>${fmtInline(h)}</th>`; });
+  html += "</tr></thead><tbody>";
+  body.forEach(row => {
+    html += "<tr>";
+    row.forEach(c => { html += `<td>${fmtInline(c)}</td>`; });
+    html += "</tr>";
+  });
+  html += "</tbody></table></div>";
+  return { html, nextIdx: i };
+}
+
+function renderMd(text) {
+  const lines = text.split("\n");
+  let i = 0, html = '<div class="md-body">';
+
+  while (i < lines.length) {
+    const raw  = lines[i];
+    const line = raw.trim();
+    if (!line) { i++; continue; }
+
+    const tbl = parseMarkdownTable(lines, i);
+    if (tbl) { html += tbl.html; i = tbl.nextIdx; continue; }
+
+    if (line.startsWith("### ")) { html += `<h3>${fmtInline(line.slice(4))}</h3>`; i++; continue; }
+    if (line.startsWith("## "))  { html += `<h2>${fmtInline(line.slice(3))}</h2>`; i++; continue; }
+    if (line.startsWith("# "))   { html += `<h1>${fmtInline(line.slice(2))}</h1>`; i++; continue; }
+
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      html += "<ul>";
+      while (i < lines.length && (lines[i].trim().startsWith("- ") || lines[i].trim().startsWith("* "))) {
+        html += `<li>${fmtInline(lines[i].trim().slice(2))}</li>`;
+        i++;
+      }
+      html += "</ul>";
+      continue;
+    }
+
+    html += `<p>${fmtInline(line)}</p>`;
+    i++;
+  }
+  html += "</div>";
+  return html;
+}
+
+// â”€â”€â”€ CHART GALLERY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function buildChartGallery(charts) {
+  if (!Array.isArray(charts) || !charts.length) return null;
+  const gallery = document.createElement("div");
+  gallery.className = "chart-gallery";
+  charts.forEach(c => {
+    if (!c?.image_base64) return;
+    const fig  = document.createElement("figure");
+    fig.className = "chart-card";
+    const img  = document.createElement("img");
+    img.src    = `data:${c.mime_type || "image/png"};base64,${c.image_base64}`;
+    img.alt    = c.title ? `Chart: ${c.title}` : "Generated chart";
+    img.loading= "lazy";
+    fig.appendChild(img);
+    if (c.title) {
+      const cap = document.createElement("figcaption");
+      cap.textContent = c.title;
+      fig.appendChild(cap);
+    }
+    gallery.appendChild(fig);
+  });
+  return gallery.children.length ? gallery : null;
+}
+
+// â”€â”€â”€ CHAT MESSAGES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function hideEmptyState() {
+  if (emptyState) emptyState.style.display = "none";
+}
+
+function appendMsg(kind, text, charts = [], extraClass = "") {
+  hideEmptyState();
+  const div = document.createElement("div");
+  div.className = `chat-message msg-${kind}${extraClass ? " " + extraClass : ""}`;
+
+  if (kind === "assistant" || kind === "auto-insight") {
+    div.innerHTML = renderMd(text);
+    const g = buildChartGallery(charts);
+    if (g) div.appendChild(g);
+  } else {
+    div.textContent = text;
+  }
+
+  chatLog.appendChild(div);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  chatHistory.push({ role: kind, text });
+  return div;
+}
+
+function showThinking(label = "Thinking") {
+  hideEmptyState();
+  const phases = [
+    "Reading your questionâ€¦",
+    "Inspecting data schemaâ€¦",
+    "Running analysisâ€¦",
+    "Drafting insightsâ€¦",
+  ];
+  const div = document.createElement("div");
+  div.className = "chat-message msg-assistant msg-thinking";
+  div.innerHTML = `
+    <div class="thinking-head">
+      <span class="spinner" aria-hidden="true"></span>
+      <strong>${escHtml(label)}</strong>
+      <span class="thinking-elapsed">0s</span>
+    </div>
+    <p class="thinking-step">${phases[0]}</p>`;
+  chatLog.appendChild(div);
+  chatLog.scrollTop = chatLog.scrollHeight;
+
+  const stepEl = div.querySelector(".thinking-step");
+  const timeEl = div.querySelector(".thinking-elapsed");
+  let pi = 0;
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    pi = (pi + 1) % phases.length;
+    stepEl.textContent = phases[pi];
+    timeEl.textContent = `${Math.floor((Date.now() - t0) / 1000)}s`;
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }, 1400);
+
+  return { stop: () => { clearInterval(iv); div.remove(); } };
+}
+
+// â”€â”€â”€ UPLOAD LOGIC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+uploadBtn.addEventListener("click", () => excelFile.click());
+attachBtn.addEventListener("click", () => excelFile.click());
+reUpBtn  .addEventListener("click", () => excelFile.click());
+excelFile.addEventListener("change", () => { if (excelFile.files[0]) doUpload(excelFile.files[0]); });
+
+// Drag & drop
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+dropZone.addEventListener("dragleave", ()  => dropZone.classList.remove("drag-over"));
+dropZone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropZone.classList.remove("drag-over");
+  const f = e.dataTransfer.files[0];
+  if (f) doUpload(f);
+});
+dropZone.addEventListener("click", e => {
+  if (e.target !== uploadBtn) excelFile.click();
+});
+
+async function doUpload(file) {
+  statusMsg.textContent = "Uploadingâ€¦";
+  setLoading(attachBtn, true);
+
+  const fd = new FormData();
+  fd.append("file", file);
+
+  try {
+    const res = await fetch(API_BASE, { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Upload failed");
+
+    sessionId   = data.session_id;
+    activeSheet = data.active_sheet;
+    allColumns  = data.column_info || [];
+
+    populateDashboard(data);
+    statusMsg.textContent = `Session: ${data.session_id.slice(0, 8)}â€¦`;
+    show(exportBtn); show(clearBtn);
+    switchMobTab("chat");
+
+    // Post a "session ready" system message
+    appendMsg("system",
+      `âœ… File loaded: ${data.filename}  |  Sheet: ${data.active_sheet}  |  ${data.shape[0]} rows Ã— ${data.shape[1]} cols`
+    );
+
+    // Kick off background AI analysis
+    loadAutoInsights();
+
+  } catch (err) {
+    statusMsg.textContent = `Upload error: ${err.message}`;
+  } finally {
+    setLoading(attachBtn, false);
+  }
+}
+
+// â”€â”€â”€ DASHBOARD POPULATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function populateDashboard(data) {
+  // File card
+  fcName.textContent = data.filename;
+  fcMeta.textContent = `${data.shape[0].toLocaleString()} rows Â· ${data.shape[1]} cols Â· ${data.sheet_names.length} sheet(s)`;
+  hide(uploadSection);
+  show(fileCard);
+
+  // Stats
+  document.getElementById("stRows")   .textContent = numFmt(data.shape[0]);
+  document.getElementById("stCols")   .textContent = numFmt(data.shape[1]);
+  document.getElementById("stSheets") .textContent = data.sheet_names.length;
+  document.getElementById("stMissing").textContent = `${data.overall_missing_pct ?? "?"}%`;
+  show(statsGrid);
+
+  // Sheet tabs
+  sheetTabRow.innerHTML = "";
+  data.sheet_names.forEach(name => {
+    const btn = document.createElement("button");
+    btn.className = "sheet-tab" + (name === data.active_sheet ? " active" : "");
+    btn.textContent = name;
+    btn.title = name;
+    btn.addEventListener("click", () => switchSheet(name));
+    sheetTabRow.appendChild(btn);
+  });
+  show(sheetBlock);
+
+  // Column list
+  renderColumnList(data.column_info || []);
+
+  // Insight block (skeleton shown while async loads)
+  show(insightBlock);
+}
+
+function renderColumnList(cols) {
+  if (!cols.length) { hide(colBlock); return; }
+  allColumns = cols;
+  colBadge.textContent = cols.length;
+  colList.innerHTML = "";
+
+  const visible = colsExpanded ? cols : cols.slice(0, COL_PREVIEW);
+
+  visible.forEach(c => {
+    const li = document.createElement("li");
+    li.className = "col-item";
+
+    const typeMap = { numeric: ["#", "type-numeric"], text: ["T", "type-text"],
+                      datetime: ["D", "type-datetime"], boolean: ["B", "type-boolean"] };
+    const [sym, cls] = typeMap[c.type] || ["?", "type-other"];
+
+    const badge   = `<span class="col-type-badge ${cls}" title="${escHtml(c.dtype)}">${sym}</span>`;
+    const missing = c.missing_pct > 0
+      ? `<span class="col-missing has-missing">${c.missing_pct}%</span>`
+      : `<span class="col-missing">0%</span>`;
+
+    li.innerHTML = `${badge}<span class="col-name" title="${escHtml(c.name)}">${escHtml(c.name)}</span>${missing}`;
+    colList.appendChild(li);
+  });
+
+  if (cols.length > COL_PREVIEW) {
+    show(colShowMore);
+    colShowMore.textContent = colsExpanded
+      ? "Show fewer â–´"
+      : `Show all ${cols.length} columns â–¾`;
+  } else {
+    hide(colShowMore);
+  }
+  show(colBlock);
+}
+
+colShowMore.addEventListener("click", () => {
+  colsExpanded = !colsExpanded;
+  renderColumnList(allColumns);
+});
+
+function switchSheet(name) {
+  activeSheet = name;
+  sheetCtx.textContent = `Sheet: ${name}`;
+  show(sheetCtx);
+  // Update active tab styling
+  sheetTabRow.querySelectorAll(".sheet-tab").forEach(b => {
+    b.classList.toggle("active", b.textContent === name);
+  });
+}
+
+// â”€â”€â”€ AUTO-INSIGHTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function loadAutoInsights() {
+  if (!sessionId) return;
+  const thinking = showThinking("Analyzing your data");
+
+  try {
+    const res = await fetch(API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "autoInsights", session_id: sessionId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Analysis failed");
+
+    thinking.stop();
+
+    // Update data type badge
+    if (data.data_type) {
+      dataTypeBadge.textContent = data.data_type;
+      show(dataTypeBadge);
+    }
+
+    // Render compact insight summary in sidebar
+    renderInsightSummary(data);
+
+    // Render rich auto-insight message in chat
+    appendMsg("auto-insight",
+      `### ðŸ” Automatic Analysis\n${data.answer}`,
+      data.charts || []
+    );
+
+    // Suggested questions
+    if (Array.isArray(data.suggested_questions) && data.suggested_questions.length) {
+      renderSuggestedQuestions(data.suggested_questions);
+    }
+
+  } catch (err) {
+    thinking.stop();
+    appendMsg("system", `âš ï¸ Auto-analysis failed: ${err.message}`);
+    // Still hide skeleton
+    if (insightSkel) insightSkel.style.display = "none";
+  }
+}
+
+function renderInsightSummary(data) {
+  if (!insightContent) return;
+
+  // Extract bullet points from the answer
+  const bullets = [];
+  const lines   = (data.answer || "").split("\n");
+  for (const line of lines) {
+    const t = line.trim();
+    if ((t.startsWith("- ") || t.startsWith("* ")) && t.length > 4) {
+      bullets.push(t.slice(2).trim());
+      if (bullets.length >= 4) break;
+    }
+  }
+
+  let html = "";
+  if (data.data_type) {
+    html += `<span class="insight-data-type">${escHtml(data.data_type)}</span>`;
+  }
+  if (bullets.length) {
+    html += '<ul class="insight-bullets">';
+    bullets.forEach(b => { html += `<li class="insight-bullet">${escHtml(b)}</li>`; });
+    html += "</ul>";
+  } else {
+    // Show first 160 chars of answer
+    const preview = (data.answer || "").replace(/#+\s*/g,"").trim().slice(0, 160);
+    html += `<p style="font-size:.78rem;color:var(--ink-soft);margin:0">${escHtml(preview)}â€¦</p>`;
+  }
+
+  insightContent.innerHTML = html;
+}
+
+function renderSuggestedQuestions(questions) {
+  if (!questions.length) return;
+  suggChips.innerHTML = "";
+  questions.forEach(q => {
+    const chip = document.createElement("button");
+    chip.className = "sugg-chip";
+    chip.textContent = q;
+    chip.addEventListener("click", () => {
+      msgInput.value = q;
+      autoResize();
+      msgInput.focus();
+      // Auto-send after brief delay for UX smoothness
+      setTimeout(() => chatForm.dispatchEvent(new Event("submit", { cancelable: true })), 80);
+    });
+    suggChips.appendChild(chip);
+  });
+  show(suggBar);
+}
+
+// â”€â”€â”€ CHAT FORM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function autoResize() {
+  msgInput.style.height = "auto";
+  msgInput.style.height = Math.min(msgInput.scrollHeight, 130) + "px";
+}
+
+msgInput.addEventListener("input", autoResize);
+autoResize();
+
+msgInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    chatForm.dispatchEvent(new Event("submit", { cancelable: true }));
+  }
+});
+
+chatForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const question = msgInput.value.trim();
+  if (!question) return;
+
+  if (!sessionId) {
+    appendMsg("system", "Please upload a survey workbook first.");
+    return;
+  }
+
+  appendMsg("user", question);
+  msgInput.value = "";
+  autoResize();
+  setLoading(sendBtn, true);
+  const thinking = showThinking();
+
+  try {
+    const res = await fetch(API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "chat", session_id: sessionId, question }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Request failed");
+
+    thinking.stop();
+    appendMsg("assistant", data.answer, data.charts || []);
+
+    // Update active sheet if agent switched
+    if (data.active_sheet && data.active_sheet !== activeSheet) {
+      switchSheet(data.active_sheet);
+    }
+
+  } catch (err) {
+    thinking.stop();
+    appendMsg("system", `Error: ${err.message}`);
+  } finally {
+    setLoading(sendBtn, false);
+  }
+});
+
+// â”€â”€â”€ EXPORT CHAT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+exportBtn.addEventListener("click", () => {
+  if (!chatHistory.length) return;
+  const lines = chatHistory.map(m => `[${m.role.toUpperCase()}]\n${m.text}`).join("\n\n---\n\n");
+  const header = `Survey Insight Chat Export\nSession: ${sessionId || "unknown"}\nExported: ${new Date().toLocaleString()}\n${"â•".repeat(50)}\n\n`;
+  const blob = new Blob([header + lines], { type: "text/plain;charset=utf-8" });
+  const a  = document.createElement("a");
+  a.href   = URL.createObjectURL(blob);
+  a.download = `chat-export-${Date.now()}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// â”€â”€â”€ CLEAR CHAT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+clearBtn.addEventListener("click", () => {
+  if (!confirm("Clear the entire chat history?")) return;
+  chatLog.innerHTML = "";
+  chatHistory = [];
+  hide(suggBar);
+  // Re-show empty state
+  const es = document.createElement("div");
+  es.className = "empty-state";
+  es.innerHTML = `
+    <svg viewBox="0 0 64 64" fill="none" width="60" height="60">
+      <circle cx="32" cy="32" r="30" fill="#f1f5f9"/>
+      <rect x="14" y="22" width="36" height="22" rx="9" fill="#e2e8f0"/>
+      <rect x="22" y="30" width="9" height="2.5" rx="1.25" fill="#94a3b8"/>
+      <rect x="22" y="35" width="18" height="2.5" rx="1.25" fill="#cbd5e1"/>
+    </svg>
+    <p class="es-title">Chat cleared</p>
+    <p class="es-body">Ask a question to continue the analysis</p>`;
+  chatLog.appendChild(es);
+});
+
+// â”€â”€â”€ MOBILE TABS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function switchMobTab(tab) {
+  if (!mobTabs) return;
+  mobTabs.querySelectorAll(".mob-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  sidePanel.classList.toggle("mob-active", tab === "data");
+  chatPanel.classList.toggle("mob-active", tab === "chat");
+}
+
+mobTabs.querySelectorAll(".mob-tab").forEach(btn => {
+  btn.addEventListener("click", () => switchMobTab(btn.dataset.tab));
+});
+
+// Default mobile view: data panel first (chat after upload)
+switchMobTab("data");
