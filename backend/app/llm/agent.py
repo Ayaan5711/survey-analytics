@@ -145,6 +145,28 @@ class ChatAgent:
         profile: DatasetProfile,
         message: str,
     ) -> "ChatAgent._ExecResult":
+        if name == "open_text_themes":
+            from app.opentext.analyzer import analyze_open_text
+            from app.tools.registry import render_open_text_chart
+            import re as _re
+            column = params["column"]
+            if column not in df.columns:
+                from app.tools.registry import _resolve_column
+                column = _resolve_column(column, list(df.columns))
+            values = df[column].dropna().astype(str).tolist()
+            safe = _re.sub(r"[^A-Za-z0-9]+", "_", column)[:60]
+            cache_path = Path(parquet_path).parent / f"opentext_{safe}.json"
+            data = await analyze_open_text(values, column, cache_path)
+            png = render_open_text_chart(data, column)
+            chart = {"png_b64": base64.b64encode(png).decode(), "title": f"Open-text themes — {column}"}
+            sent = data.get("sentiment", {})
+            table = [{"theme": t.get("theme", ""), "mentions": t.get("mentions", 0)} for t in data.get("themes", [])]
+            top = table[0]["theme"] if table else "none"
+            summary = (f"Open-text analysis of '{column}' ({data.get('n', 0)} responses): "
+                       f"top theme '{top}'; sentiment {sent}.")
+            return self._ExecResult(summary=summary, chart=chart, table=table or None,
+                                    table_title=f"Themes in {column}")
+
         if name == "generate_code":
             code = params.get("code", "")
             result = run_code(code, parquet_path)

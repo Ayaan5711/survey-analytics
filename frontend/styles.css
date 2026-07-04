@@ -287,8 +287,17 @@ body {
   color: var(--ink-muted); transition: color 0.12s;
 }
 #btn-close-canvas:hover { color: var(--ink); }
-#canvas-body { flex: 1; overflow-y: auto; padding: 18px; }
-#canvas-img { width: 100%; display: block; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+#canvas-zoom { display: flex; gap: 4px; margin-left: auto; margin-right: 8px; }
+#canvas-zoom button {
+  width: 26px; height: 26px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); cursor: pointer; font-size: 14px; line-height: 1; color: var(--ink);
+  font-family: var(--font);
+}
+#canvas-zoom button:hover { background: var(--surface-2); }
+#canvas-body { flex: 1; overflow: hidden; padding: 18px; }
+#canvas-body.zoomed { cursor: grab; }
+#canvas-img { width: 100%; display: block; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  transform-origin: center center; transition: transform 0.05s linear; touch-action: none; }
 #canvas-actions { padding: 14px 18px; border-top: 1px solid var(--border); display: flex; gap: 10px; }
 #canvas-actions button {
   flex: 1; padding: 10px; border: 1px solid var(--border-strong);

@@ -54,6 +54,15 @@ async def chat(
     db.add(ChatMessage(session_id=session_id, role="user", content=body.message))
     db.commit()
 
+    # ── Question cache: reuse a prior answer for the same question on the same
+    # dataset version (skips the LLM entirely). Disabled for comparison queries. ──
+    cache_path = None
+    if not body.compare_session_id:
+        cache_path = _cache_path(record.data_path, body.message)
+        cached = _read_cache(cache_path)
+        if cached is not None:
+            return _persist_and_return(db, session_id, cached, cached_hit=True)
+
     # Optional comparison context: feed a textual diff summary to the agent.
     compare_diff = None
     if body.compare_session_id:
@@ -71,23 +80,7 @@ async def chat(
     # re-rendered when the chat history is reloaded.
     table_payload = {"rows": response.table, "title": response.table_title} if response.table else None
 
-    msg = ChatMessage(
-        session_id=session_id,
-        role="assistant",
-        content=response.content,
-        generated_code=response.generated_code,
-        chart_paths=response.chart,
-        data_table=table_payload,
-        follow_ups=response.follow_ups,
-        caveats=response.caveats,
-    )
-    db.add(msg)
-    db.commit()
-    db.refresh(msg)
-
-    return {
-        "message_id": msg.id,
-        "role": "assistant",
+    payload = {
         "content": response.content,
         "chart": response.chart,
         "generated_code": response.generated_code,
@@ -96,6 +89,68 @@ async def chat(
         "caveats": response.caveats,
         "tool_calls_made": response.tool_calls_made,
     }
+    if cache_path is not None:
+        _write_cache(cache_path, payload)
+    return _persist_and_return(db, session_id, payload, cached_hit=False)
+
+
+def _persist_and_return(db: Session, session_id: str, payload: dict, cached_hit: bool) -> dict:
+    msg = ChatMessage(
+        session_id=session_id,
+        role="assistant",
+        content=payload["content"],
+        generated_code=payload.get("generated_code"),
+        chart_paths=payload.get("chart"),
+        data_table=payload.get("table"),
+        follow_ups=payload.get("follow_ups"),
+        caveats=payload.get("caveats"),
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+    return {
+        "message_id": msg.id,
+        "role": "assistant",
+        "content": payload["content"],
+        "chart": payload.get("chart"),
+        "generated_code": payload.get("generated_code"),
+        "table": payload.get("table"),
+        "follow_ups": payload.get("follow_ups") or [],
+        "caveats": payload.get("caveats") or [],
+        "tool_calls_made": payload.get("tool_calls_made") or [],
+        "cached": cached_hit,
+    }
+
+
+def _cache_path(data_path: str, message: str) -> Path:
+    """Cache key = dataset version (parquet mtime) + normalized question."""
+    import hashlib
+    try:
+        version = str(int(Path(data_path).stat().st_mtime))
+    except OSError:
+        version = "0"
+    norm = " ".join(message.lower().split())
+    digest = hashlib.sha256(f"{version}|{norm}".encode()).hexdigest()[:32]
+    return Path(data_path).parent / "qcache" / f"{digest}.json"
+
+
+def _read_cache(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        import json
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _write_cache(path: Path, payload: dict) -> None:
+    try:
+        import json
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _build_compare_summary(db: Session, base_id: str, compare_id: str) -> str | None:
