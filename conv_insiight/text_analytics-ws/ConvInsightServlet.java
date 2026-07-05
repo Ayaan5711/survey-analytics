@@ -98,6 +98,12 @@ public class ConvInsightServlet extends HttpServlet {
             case "autoInsights":
                 return post("/api/auto-insights", body.toString());
 
+            case "dashboard":
+                return post("/api/dashboard", body.toString());
+
+            case "report":
+                return post("/api/export-report", body.toString());
+
             default:
                 throw new IllegalArgumentException("Unknown action: " + action);
         }

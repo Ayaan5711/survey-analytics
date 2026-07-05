@@ -327,6 +327,7 @@ function populateDashboard(data) {
   document.getElementById("stSheets") .textContent = data.sheet_names.length;
   document.getElementById("stMissing").textContent = `${data.overall_missing_pct ?? "?"}%`;
   show(statsGrid);
+  show(document.getElementById("dashActions"));
 
   // Sheet tabs
   sheetTabRow.innerHTML = "";
@@ -607,3 +608,68 @@ try {
     appendMsg("system", "↩ Resumed your previous session — ask a question, or upload a new file to start over.");
   }
 } catch (e) {}
+
+// ─── DASHBOARD + PDF REPORT ─────────────────────────────────────────────────
+const dashBtn      = document.getElementById("dashBtn");
+const reportBtn    = document.getElementById("reportBtn");
+const dashboardBlk = document.getElementById("dashboardBlock");
+
+async function loadDashboardPanel() {
+  if (!sessionId) return;
+  setLoading(dashBtn, true);
+  dashboardBlk.hidden = false;
+  dashboardBlk.innerHTML = '<p class="blk-label">Loading dashboard…</p>';
+  try {
+    const res = await fetch(API_BASE, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "dashboard", session_id: sessionId }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || "Dashboard failed");
+
+    const q = d.quality || {};
+    const qs = [];
+    if (q.duplicate_rows) qs.push(`${q.duplicate_rows} duplicate rows`);
+    if ((q.mostly_empty_columns || []).length) qs.push(`${q.mostly_empty_columns.length} mostly-empty cols`);
+    if ((q.constant_columns || []).length) qs.push(`${q.constant_columns.length} constant cols`);
+
+    let html = '<p class="blk-label">Dashboard</p><div class="dash-stats">';
+    html += `<div class="stat-tile"><span class="st-val">${numFmt(d.stats.rows)}</span><span class="st-lbl">Rows</span></div>`;
+    html += `<div class="stat-tile"><span class="st-val">${d.stats.columns}</span><span class="st-lbl">Columns</span></div>`;
+    html += `<div class="stat-tile"><span class="st-val">${d.stats.files_count}</span><span class="st-lbl">Files</span></div>`;
+    html += `<div class="stat-tile warn-tile"><span class="st-val">${d.stats.missing_pct}%</span><span class="st-lbl">Missing</span></div></div>`;
+    html += `<div class="dash-quality">${qs.length ? "⚠ " + qs.join(" · ") : "✓ No major quality issues"}</div>`;
+    dashboardBlk.innerHTML = html;
+    const g = buildChartGallery(d.charts || []);
+    if (g) dashboardBlk.appendChild(g);
+  } catch (err) {
+    dashboardBlk.innerHTML = `<p class="blk-label" style="color:#dc2626">Dashboard error: ${escHtml(err.message)}</p>`;
+  } finally {
+    setLoading(dashBtn, false);
+  }
+}
+
+async function exportReport() {
+  if (!sessionId) return;
+  setLoading(reportBtn, true);
+  try {
+    const res = await fetch(API_BASE, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "report", session_id: sessionId }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || "Report failed");
+    const bytes = Uint8Array.from(atob(d.pdf_base64), c => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = d.filename || "survey_report.pdf"; a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    statusMsg.textContent = `Report error: ${err.message}`;
+  } finally {
+    setLoading(reportBtn, false);
+  }
+}
+
+if (dashBtn)   dashBtn.addEventListener("click", loadDashboardPanel);
+if (reportBtn) reportBtn.addEventListener("click", exportReport);
