@@ -138,6 +138,27 @@ function renderMd(text) {
 }
 
 // â”€â”€â”€ CHART GALLERY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function openLightbox(src, title) {
+  const ov = document.createElement("div");
+  ov.className = "lightbox";
+  ov.innerHTML =
+    `<div class="lb-inner"><div class="lb-head"><span>${escHtml(title)}</span>` +
+    `<button class="lb-close" aria-label="Close">×</button></div>` +
+    `<div class="lb-body"><img src="${src}" alt="${escHtml(title)}"></div></div>`;
+  const close = () => ov.remove();
+  ov.addEventListener("click", e => { if (e.target === ov || e.target.classList.contains("lb-close")) close(); });
+  document.addEventListener("keydown", function esc(e){ if(e.key==="Escape"){ close(); document.removeEventListener("keydown", esc);} });
+  // simple wheel zoom on the image
+  const img = ov.querySelector("img");
+  let scale = 1;
+  ov.querySelector(".lb-body").addEventListener("wheel", e => {
+    e.preventDefault();
+    scale = Math.min(6, Math.max(1, scale * (e.deltaY < 0 ? 1.15 : 1/1.15)));
+    img.style.transform = `scale(${scale})`;
+  }, { passive: false });
+  document.body.appendChild(ov);
+}
+
 function buildChartGallery(charts) {
   if (!Array.isArray(charts) || !charts.length) return null;
   const gallery = document.createElement("div");
@@ -146,11 +167,26 @@ function buildChartGallery(charts) {
     if (!c?.image_base64) return;
     const fig  = document.createElement("figure");
     fig.className = "chart-card";
+    const src  = `data:${c.mime_type || "image/png"};base64,${c.image_base64}`;
     const img  = document.createElement("img");
-    img.src    = `data:${c.mime_type || "image/png"};base64,${c.image_base64}`;
+    img.src    = src;
     img.alt    = c.title ? `Chart: ${c.title}` : "Generated chart";
     img.loading= "lazy";
+    img.style.cursor = "zoom-in";
+    img.title  = "Click to zoom";
+    img.addEventListener("click", () => openLightbox(src, c.title || "Chart"));
     fig.appendChild(img);
+
+    const bar = document.createElement("div");
+    bar.className = "chart-actions";
+    const dl = document.createElement("a");
+    dl.href = src;
+    dl.download = ((c.title || "chart").replace(/\s+/g, "_")) + ".png";
+    dl.textContent = "⤓ Download";
+    dl.className = "chart-dl";
+    bar.appendChild(dl);
+    fig.appendChild(bar);
+
     if (c.title) {
       const cap = document.createElement("figcaption");
       cap.textContent = c.title;
@@ -223,7 +259,7 @@ function showThinking(label = "Thinking") {
 uploadBtn.addEventListener("click", () => excelFile.click());
 attachBtn.addEventListener("click", () => excelFile.click());
 reUpBtn  .addEventListener("click", () => excelFile.click());
-excelFile.addEventListener("change", () => { if (excelFile.files[0]) doUpload(excelFile.files[0]); });
+excelFile.addEventListener("change", () => { if (excelFile.files.length) doUpload(excelFile.files); });
 
 // Drag & drop
 dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
@@ -231,19 +267,20 @@ dropZone.addEventListener("dragleave", ()  => dropZone.classList.remove("drag-ov
 dropZone.addEventListener("drop", e => {
   e.preventDefault();
   dropZone.classList.remove("drag-over");
-  const f = e.dataTransfer.files[0];
-  if (f) doUpload(f);
+  if (e.dataTransfer.files.length) doUpload(e.dataTransfer.files);
 });
 dropZone.addEventListener("click", e => {
   if (e.target !== uploadBtn) excelFile.click();
 });
 
-async function doUpload(file) {
-  statusMsg.textContent = "Uploadingâ€¦";
+async function doUpload(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  statusMsg.textContent = files.length > 1 ? `Uploading ${files.length} files…` : "Uploading…";
   setLoading(attachBtn, true);
 
   const fd = new FormData();
-  fd.append("file", file);
+  files.forEach(f => fd.append("files", f));   // multi-file: field name "files"
 
   try {
     const res = await fetch(API_BASE, { method: "POST", body: fd });
@@ -253,15 +290,17 @@ async function doUpload(file) {
     sessionId   = data.session_id;
     activeSheet = data.active_sheet;
     allColumns  = data.column_info || [];
+    try { localStorage.setItem("convinsight_session", sessionId); } catch (e) {}
 
     populateDashboard(data);
-    statusMsg.textContent = `Session: ${data.session_id.slice(0, 8)}â€¦`;
+    statusMsg.textContent = `Session: ${data.session_id.slice(0, 8)}…`;
     show(exportBtn); show(clearBtn);
     switchMobTab("chat");
 
-    // Post a "session ready" system message
+    const fileLabel = (data.files && data.files.length > 1)
+      ? `${data.files.length} files combined` : data.filename;
     appendMsg("system",
-      `âœ… File loaded: ${data.filename}  |  Sheet: ${data.active_sheet}  |  ${data.shape[0]} rows Ã— ${data.shape[1]} cols`
+      `✅ Loaded: ${fileLabel}  |  ${data.shape[0].toLocaleString()} rows × ${data.shape[1]} cols`
     );
 
     // Kick off background AI analysis
@@ -558,3 +597,13 @@ mobTabs.querySelectorAll(".mob-tab").forEach(btn => {
 
 // Default mobile view: data panel first (chat after upload)
 switchMobTab("data");
+
+// Resume a previous session after a page refresh (server keeps the data on disk).
+try {
+  const saved = localStorage.getItem("convinsight_session");
+  if (saved) {
+    sessionId = saved;
+    show(exportBtn); show(clearBtn);
+    appendMsg("system", "↩ Resumed your previous session — ask a question, or upload a new file to start over.");
+  }
+} catch (e) {}

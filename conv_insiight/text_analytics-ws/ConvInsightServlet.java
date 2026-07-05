@@ -105,21 +105,25 @@ public class ConvInsightServlet extends HttpServlet {
 
     private String uploadFile(HttpServletRequest request) throws Exception {
 
-        Part filePart = request.getPart("file");
-
         HttpPost req = new HttpPost(BASE_URL + "/api/upload");
-
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
 
-        builder.addBinaryBody(
-            "file",
-            filePart.getInputStream(),
-            org.apache.http.entity.ContentType.APPLICATION_OCTET_STREAM,
-            getFileName(filePart) 
-        );
+        // Forward every uploaded file part as "files" (supports one or many).
+        boolean any = false;
+        for (Part part : request.getParts()) {
+            String header = part.getHeader("content-disposition");
+            if (header == null || !header.contains("filename=")) continue;  // skip non-file fields
+            builder.addBinaryBody(
+                "files",
+                part.getInputStream(),
+                org.apache.http.entity.ContentType.APPLICATION_OCTET_STREAM,
+                getFileName(part)
+            );
+            any = true;
+        }
+        if (!any) throw new ServletException("No files found in upload");
 
         req.setEntity(builder.build());
-
         return execute(req);
     }
     

@@ -1,190 +1,157 @@
 from __future__ import annotations
 
+import ast
 import base64
 import contextlib
-import importlib
 import io
 import logging
-import math
-from builtins import __import__ as py_import
+import multiprocessing
+from glob import glob
+from pathlib import Path
 from typing import Any
 
-import matplotlib
-import pandas as pd
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-
-ALLOWED_BUILTINS = {
-    "abs": abs,
-    "all": all,
-    "any": any,
-    "bool": bool,
-    "dict": dict,
-    "enumerate": enumerate,
-    "float": float,
-    "int": int,
-    "len": len,
-    "list": list,
-    "max": max,
-    "min": min,
-    "range": range,
-    "round": round,
-    "set": set,
-    "sorted": sorted,
-    "str": str,
-    "sum": sum,
-    "tuple": tuple,
-    "zip": zip,
-    "print": print,
-    "Exception": Exception,
-    "ValueError": ValueError,
-    "TypeError": TypeError,
-    "KeyError": KeyError,
-    "isinstance": isinstance,
-    "hasattr": hasattr,
-}
-
-
-SAFE_IMPORTS = {
-    "pandas",
-    "numpy",
-    "math",
-    "statistics",
-    "re",
-    "json",
-    "matplotlib",
-    "seaborn",
-}
-
-
-def restricted_import(name: str, globals=None, locals=None, fromlist=(), level: int = 0):
-    root = name.split(".", 1)[0]
-    if root not in SAFE_IMPORTS:
-        raise ImportError(f"Import of '{name}' is blocked")
-    return py_import(name, globals, locals, fromlist, level)
-
-
-ALLOWED_BUILTINS["__import__"] = restricted_import
+try:
+    import resource as _resource       # Linux only
+    _HAS_RESOURCE = True
+except ImportError:
+    _HAS_RESOURCE = False
 
 
 logger = logging.getLogger("survey_agent.executor")
 
-
-def _truncate(value: Any, max_len: int = 1500) -> str:
-    text = str(value)
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + "... [truncated]"
-
-
-def _collect_chart_images(max_charts: int = 4) -> list[dict[str, str]]:
-    charts: list[dict[str, str]] = []
-    figure_numbers = list(plt.get_fignums())[:max_charts]
-
-    for figure_number in figure_numbers:
-        figure = plt.figure(figure_number)
-
-        # Ignore placeholder/empty figures so UI does not show blank charts.
-        has_chart_data = any(axis.has_data() for axis in figure.axes)
-        if not has_chart_data:
-            logger.info("python_exec_chart_skipped_empty figure_number=%s", figure_number)
-            plt.close(figure)
-            continue
-
-        buffer = io.BytesIO()
-        figure.savefig(buffer, format="png", bbox_inches="tight", dpi=130)
-        buffer.seek(0)
-
-        title = ""
-        if figure.axes:
-            title = figure.axes[0].get_title() or ""
-
-        charts.append(
-            {
-                "mime_type": "image/png",
-                "image_base64": base64.b64encode(buffer.read()).decode("utf-8"),
-                "title": title,
-            }
-        )
-
-        buffer.close()
-        plt.close(figure)
-
-    return charts
+# ─── Static screen (read the code before running it) ────────────────────────
+_ALLOWED_IMPORTS = {"pandas", "numpy", "math", "statistics", "re", "json",
+                    "matplotlib", "seaborn", "duckdb", "io"}
+_BLOCKED_NAMES = {"os", "sys", "open", "__import__", "eval", "exec", "compile",
+                  "globals", "locals", "__builtins__", "breakpoint", "input",
+                  "socket", "subprocess", "requests", "urllib", "shutil", "pathlib"}
 
 
-def _load_seaborn_if_available():
+class _Checker(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for a in node.names:
+            if a.name.split(".")[0] not in _ALLOWED_IMPORTS:
+                self.errors.append(f"Import not allowed: {a.name}")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module and node.module.split(".")[0] not in _ALLOWED_IMPORTS:
+            self.errors.append(f"Import not allowed: {node.module}")
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in _BLOCKED_NAMES:
+            self.errors.append(f"Name not allowed: {node.id}")
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr.startswith("__"):
+            self.errors.append(f"Dunder attribute not allowed: {node.attr}")
+        self.generic_visit(node)
+
+
+def _check(code: str) -> list[str]:
     try:
-        return importlib.import_module("seaborn")
-    except Exception:
-        return None
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return [f"Syntax error: {exc}"]
+    c = _Checker()
+    c.visit(tree)
+    return c.errors
 
 
-def run_python_analysis_code(code: str, dataframes: dict[str, pd.DataFrame], active_sheet: str) -> dict[str, Any]:
-    """
-    Executes analysis code in a constrained namespace.
-
-    Exposed variables:
-    - df: active sheet dataframe
-    - dataframes: all workbook sheets by name
-    - pd: pandas module
-
-    To return structured content, assign to variable `result` in user code.
-    """
-    output_buffer = io.StringIO()
-    exec_scope: dict[str, Any] = {
-        "pd": pd,
-        "math": math,
-        "plt": plt,
-        "sns": _load_seaborn_if_available(),
-        "dataframes": dataframes,
-        "df": dataframes[active_sheet],
-        "result": None,
-        "__builtins__": ALLOWED_BUILTINS,
-    }
-
-    plt.close("all")
-
-    logger.info(
-        "python_exec_start active_sheet=%s rows=%s cols=%s",
-        active_sheet,
-        dataframes[active_sheet].shape[0],
-        dataframes[active_sheet].shape[1],
-    )
-    logger.info("python_exec_code=\n%s", code)
-
-    try:
-        with contextlib.redirect_stdout(output_buffer):
-            # Use one shared scope so helper functions can resolve names like `pd`.
-            exec(code, exec_scope, exec_scope)
-    except Exception as exc:
-        plt.close("all")
-        error_payload = {
-            "ok": False,
-            "error": f"{type(exc).__name__}: {exc}",
-            "stdout": output_buffer.getvalue(),
-            "charts": [],
-        }
-        logger.exception("python_exec_error payload=%s", _truncate(error_payload))
-        return error_payload
-
-    result_obj = exec_scope.get("result")
-    if hasattr(result_obj, "to_dict"):
+# ─── Isolated execution (separate process + resource caps) ──────────────────
+def _worker(code: str, session_dir: str, conn) -> None:
+    if _HAS_RESOURCE:
+        # CPU-seconds cap bounds runaway loops; a wall-clock timeout in the parent
+        # is the hard stop. (RLIMIT_AS is avoided — DuckDB/matplotlib reserve large
+        # virtual memory and would be killed on import.)
         try:
-            result_obj = result_obj.to_dict()
+            _resource.setrlimit(_resource.RLIMIT_CPU, (15, 15))
+        except (ValueError, OSError):
+            pass
+
+    import duckdb
+    import pandas as pd
+    import numpy as np
+    import math
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    try:
+        import seaborn as sns
+    except Exception:
+        sns = None
+
+    try:
+        parts = sorted(glob(str(Path(session_dir) / "*.parquet")))
+        con = duckdb.connect()
+        con.execute(f"CREATE VIEW data AS SELECT * FROM read_parquet({parts})")
+        df = con.execute("SELECT * FROM data").df()
+    except Exception as exc:
+        conn.send({"ok": False, "error": f"Failed to load data: {exc}", "charts": [], "stdout": ""})
+        conn.close()
+        return
+
+    scope: dict[str, Any] = {"df": df, "con": con, "pd": pd, "np": np, "math": math,
+                             "plt": plt, "sns": sns, "io": io, "result": None}
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            exec(code, scope, scope)  # noqa: S102 — screened by AST + isolated process
+    except Exception as exc:
+        conn.send({"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                   "charts": [], "stdout": out.getvalue()})
+        conn.close()
+        return
+
+    charts = []
+    for num in plt.get_fignums()[:4]:
+        fig = plt.figure(num)
+        if not any(ax.has_data() for ax in fig.axes):
+            continue
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=130)
+        buf.seek(0)
+        title = fig.axes[0].get_title() if fig.axes else ""
+        charts.append({"mime_type": "image/png",
+                       "image_base64": base64.b64encode(buf.read()).decode("utf-8"),
+                       "title": title})
+        plt.close(fig)
+
+    res = scope.get("result")
+    if hasattr(res, "to_dict"):
+        try:
+            res = res.to_dict()
         except Exception:
-            result_obj = str(result_obj)
+            res = str(res)
+    conn.send({"ok": True, "result": res, "charts": charts, "stdout": out.getvalue()})
+    conn.close()
 
-    charts = _collect_chart_images(max_charts=4)
 
-    success_payload = {
-        "ok": True,
-        "stdout": output_buffer.getvalue(),
-        "result": result_obj,
-        "charts": charts,
-    }
-    logger.info("python_exec_charts_generated count=%s", len(charts))
-    logger.info("python_exec_success payload=%s", _truncate(success_payload))
-    return success_payload
+def run_python_analysis_code(code: str, session_dir: str, timeout: int = 20) -> dict[str, Any]:
+    """Run LLM-written analysis code against the session's combined dataset.
+
+    Screened by AST first, then executed in a separate process with CPU/memory/time
+    limits. Exposes: df (all files combined), con (DuckDB), pd, np, plt, sns.
+    """
+    errs = _check(code)
+    if errs:
+        return {"ok": False, "error": "Code not allowed: " + "; ".join(errs), "charts": [], "stdout": ""}
+
+    parent, child = multiprocessing.Pipe()
+    p = multiprocessing.Process(target=_worker, args=(code, session_dir, child))
+    p.start()
+    child.close()
+    if parent.poll(timeout):
+        data = parent.recv()
+    else:
+        p.terminate()
+        p.join(5)
+        data = {"ok": False, "error": f"Execution timed out after {timeout}s", "charts": [], "stdout": ""}
+    p.join()
+    parent.close()
+    return data

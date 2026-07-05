@@ -1005,3 +1005,20 @@ textarea#msgInput::placeholder { color: #a0aab5; }
   .chart-card img { max-height: 240px; }
 }
 
+/* ── Chart download + zoom lightbox ── */
+.chart-actions { display: flex; justify-content: flex-end; padding: 4px 6px 0; }
+.chart-dl {
+  font-size: 12px; text-decoration: none; color: #2563eb;
+  border: 1px solid #d6e4ff; background: #eef4ff; border-radius: 6px; padding: 3px 10px;
+}
+.chart-dl:hover { background: #e0ecff; }
+.lightbox {
+  position: fixed; inset: 0; background: rgba(16,24,40,.6);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+}
+.lb-inner { background: #fff; border-radius: 10px; max-width: 92vw; max-height: 92vh; display: flex; flex-direction: column; overflow: hidden; }
+.lb-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid #eaecf0; font-size: 13px; font-weight: 600; }
+.lb-close { background: none; border: none; font-size: 22px; cursor: pointer; line-height: 1; color: #667085; }
+.lb-body { overflow: auto; padding: 12px; }
+.lb-body img { display: block; max-width: 100%; transform-origin: center center; transition: transform .05s linear; }
+
