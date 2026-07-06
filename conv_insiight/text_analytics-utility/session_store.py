@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 import io
-import json
-import os
-import tempfile
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-import duckdb
 import pandas as pd
-
-
-# Local disk only (no infra). Placeholder path; override with CONVINSIGHT_DATA if needed.
-DATA_DIR = Path(os.getenv("CONVINSIGHT_DATA", str(Path(tempfile.gettempdir()) / "convinsight_data")))
 
 
 def _read_any(filename: str, raw: bytes) -> list[pd.DataFrame]:
@@ -28,32 +19,6 @@ def _read_any(filename: str, raw: bytes) -> list[pd.DataFrame]:
 def _sig(df: pd.DataFrame) -> tuple:
     """Schema signature = normalized column names (to group same-schema parts)."""
     return tuple(str(c).strip().lower() for c in df.columns)
-
-
-@dataclass
-class SurveySession:
-    session_id: str
-    filename: str                 # combined label, e.g. "a.xlsx + b.xlsx"
-    files: list[str]              # individual uploaded file names
-    columns: list[str]            # shared schema
-    row_count: int
-    profile: str                  # compact text profile for the LLM
-    dir: Path
-    con: duckdb.DuckDBPyConnection
-    chat_history: list[dict[str, str]] = field(default_factory=list)
-
-    # Kept for frontend compatibility (his UI expects these names).
-    @property
-    def sheet_names(self) -> list[str]:
-        return self.files
-
-    @property
-    def active_sheet(self) -> str:
-        return self.filename
-
-    def dataframe(self) -> pd.DataFrame:
-        """Materialize the combined dataset (all files unioned)."""
-        return self.con.execute("SELECT * FROM data").df()
 
 
 def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
@@ -72,17 +37,48 @@ def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
     return "\n".join(lines)
 
 
+@dataclass
+class SurveySession:
+    session_id: str
+    filename: str                 # combined label, e.g. "a.xlsx + b.xlsx"
+    files: list[str]              # individual uploaded file names
+    df: pd.DataFrame              # all files combined (in memory, like the original design)
+    profile: str                  # compact text profile for the LLM
+    chat_history: list[dict[str, str]] = field(default_factory=list)
+
+    # Kept for frontend compatibility (his UI expects these names).
+    @property
+    def sheet_names(self) -> list[str]:
+        return self.files
+
+    @property
+    def active_sheet(self) -> str:
+        return self.filename
+
+    @property
+    def columns(self) -> list[str]:
+        return [str(c) for c in self.df.columns]
+
+    @property
+    def row_count(self) -> int:
+        return len(self.df)
+
+    def dataframe(self) -> pd.DataFrame:
+        return self.df
+
+
 class SurveySessionStore:
+    """In-memory session store (single gunicorn worker) — same model as the
+    original ConvInsight design, extended to combine multiple same-schema files."""
+
     def __init__(self) -> None:
         self._sessions: dict[str, SurveySession] = {}
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     def create_from_uploads(self, uploads: list[tuple[str, bytes]]) -> SurveySession:
-        """uploads = [(filename, bytes), ...]. Same-schema parts are unioned into one dataset."""
+        """uploads = [(filename, bytes), ...]. Same-schema parts are combined into one dataset."""
         if not uploads:
             raise ValueError("No files provided.")
 
-        # Read every sheet of every file, then keep the majority schema group.
         parts: list[tuple[str, pd.DataFrame]] = []
         for fname, raw in uploads:
             for df in _read_any(fname, raw):
@@ -96,60 +92,24 @@ class SurveySessionStore:
         best_sig = max(groups, key=lambda s: sum(len(d) for _, d in groups[s]))
         chosen = groups[best_sig]
 
+        combined = pd.concat([d for _, d in chosen], ignore_index=True)
+        file_names = list(dict.fromkeys(fname for fname, _ in chosen))  # de-duplicated, order preserved
+
         session_id = str(uuid.uuid4())
-        sess_dir = DATA_DIR / session_id
-        sess_dir.mkdir(parents=True, exist_ok=True)
-
-        parquet_paths: list[str] = []
-        file_names: list[str] = []
-        for idx, (fname, df) in enumerate(chosen):
-            p = sess_dir / f"part_{idx}.parquet"
-            df.to_parquet(p, index=False)
-            parquet_paths.append(str(p))
-            if fname not in file_names:
-                file_names.append(fname)
-
-        con = duckdb.connect()  # in-process, no server
-        path_list = ", ".join(f"'{p}'" for p in parquet_paths)
-        con.execute(f"CREATE VIEW data AS SELECT * FROM read_parquet([{path_list}])")
-        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]
-
-        sample = con.execute("SELECT * FROM data LIMIT 20000").df()  # bounded scan for profile
-        columns = [str(c) for c in sample.columns]
-        profile = _build_profile(sample, file_names, row_count)
-
-        meta = {"files": file_names, "parquet": [Path(p).name for p in parquet_paths],
-                "columns": columns, "row_count": row_count, "profile": profile}
-        (sess_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-
+        profile = _build_profile(combined, file_names, len(combined))
         session = SurveySession(
             session_id=session_id, filename=" + ".join(file_names), files=file_names,
-            columns=columns, row_count=row_count, profile=profile, dir=sess_dir, con=con,
+            df=combined, profile=profile,
         )
         self._sessions[session_id] = session
         return session
 
     def get(self, session_id: str) -> SurveySession:
-        """Return a live session, reloading from disk if the process restarted."""
-        if session_id in self._sessions:
-            return self._sessions[session_id]
-        sess_dir = DATA_DIR / session_id
-        meta_path = sess_dir / "meta.json"
-        if not meta_path.exists():
+        session = self._sessions.get(session_id)
+        if session is None:
             raise KeyError(f"Unknown session_id: {session_id}")
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        con = duckdb.connect()
-        paths = ", ".join(f"'{sess_dir / p}'" for p in meta["parquet"])
-        con.execute(f"CREATE VIEW data AS SELECT * FROM read_parquet([{paths}])")
-        session = SurveySession(
-            session_id=session_id, filename=" + ".join(meta["files"]), files=meta["files"],
-            columns=meta["columns"], row_count=meta["row_count"], profile=meta["profile"],
-            dir=sess_dir, con=con,
-        )
-        self._sessions[session_id] = session
         return session
 
     @staticmethod
     def dataframe_preview(session: SurveySession, max_rows: int = 8) -> list[dict[str, Any]]:
-        df = session.con.execute(f"SELECT * FROM data LIMIT {max_rows}").df()
-        return df.fillna("").to_dict(orient="records")
+        return session.df.head(max_rows).fillna("").to_dict(orient="records")

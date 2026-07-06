@@ -239,7 +239,7 @@ class Pivot(BaseModel):
     value_col: str = Field("", description="Optional numeric column to average; omit for counts")
 
 class PyCode(BaseModel):
-    code: str = Field(description="Python using df (all files combined), con (DuckDB), pd, np, plt. Assign to `result`.")
+    code: str = Field(description="Python using df (all files combined), pd, np, plt. Assign to `result`.")
 
 
 class SurveyAnalysisAgent:
@@ -260,25 +260,18 @@ class SurveyAnalysisAgent:
         )
         self.max_history_messages = 16
 
-    # deterministic tools use one materialized df per turn (lazy — only if called)
+    # deterministic tools operate directly on the session's in-memory dataframe
     def _build_tools(self, session: SurveySession) -> list[StructuredTool]:
-        cache: dict[str, pd.DataFrame] = {}
-
-        def df() -> pd.DataFrame:
-            if "df" not in cache:
-                cache["df"] = session.dataframe()
-            return cache["df"]
-
         def wrap(fn):
             def inner(**kwargs):
                 try:
-                    return fn(df(), **kwargs)
+                    return fn(session.df, **kwargs)
                 except Exception as exc:
                     return json.dumps({"summary": f"Tool error: {exc}", "charts": []})
             return inner
 
         def run_python(code: str) -> str:
-            resp = run_python_analysis_code(code, str(session.dir))
+            resp = run_python_analysis_code(code, session.df)
             return json.dumps(resp, default=str)
 
         def dataset_schema() -> str:

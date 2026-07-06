@@ -6,9 +6,9 @@ import contextlib
 import io
 import logging
 import multiprocessing
-from glob import glob
-from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 try:
     import resource as _resource       # Linux only
@@ -21,7 +21,7 @@ logger = logging.getLogger("survey_agent.executor")
 
 # ─── Static screen (read the code before running it) ────────────────────────
 _ALLOWED_IMPORTS = {"pandas", "numpy", "math", "statistics", "re", "json",
-                    "matplotlib", "seaborn", "duckdb", "io"}
+                    "matplotlib", "seaborn", "io"}
 _BLOCKED_NAMES = {"os", "sys", "open", "__import__", "eval", "exec", "compile",
                   "globals", "locals", "__builtins__", "breakpoint", "input",
                   "socket", "subprocess", "requests", "urllib", "shutil", "pathlib"}
@@ -64,18 +64,15 @@ def _check(code: str) -> list[str]:
 
 
 # ─── Isolated execution (separate process + resource caps) ──────────────────
-def _worker(code: str, session_dir: str, conn) -> None:
+def _worker(code: str, df: pd.DataFrame, conn) -> None:
     if _HAS_RESOURCE:
-        # CPU-seconds cap bounds runaway loops; a wall-clock timeout in the parent
-        # is the hard stop. (RLIMIT_AS is avoided — DuckDB/matplotlib reserve large
-        # virtual memory and would be killed on import.)
+        # CPU-seconds cap bounds runaway loops; a wall-clock timeout in the
+        # parent is the hard stop.
         try:
             _resource.setrlimit(_resource.RLIMIT_CPU, (15, 15))
         except (ValueError, OSError):
             pass
 
-    import duckdb
-    import pandas as pd
     import numpy as np
     import math
     import matplotlib
@@ -86,17 +83,7 @@ def _worker(code: str, session_dir: str, conn) -> None:
     except Exception:
         sns = None
 
-    try:
-        parts = sorted(glob(str(Path(session_dir) / "*.parquet")))
-        con = duckdb.connect()
-        con.execute(f"CREATE VIEW data AS SELECT * FROM read_parquet({parts})")
-        df = con.execute("SELECT * FROM data").df()
-    except Exception as exc:
-        conn.send({"ok": False, "error": f"Failed to load data: {exc}", "charts": [], "stdout": ""})
-        conn.close()
-        return
-
-    scope: dict[str, Any] = {"df": df, "con": con, "pd": pd, "np": np, "math": math,
+    scope: dict[str, Any] = {"df": df, "pd": pd, "np": np, "math": math,
                              "plt": plt, "sns": sns, "io": io, "result": None}
     out = io.StringIO()
     try:
@@ -132,18 +119,18 @@ def _worker(code: str, session_dir: str, conn) -> None:
     conn.close()
 
 
-def run_python_analysis_code(code: str, session_dir: str, timeout: int = 20) -> dict[str, Any]:
-    """Run LLM-written analysis code against the session's combined dataset.
+def run_python_analysis_code(code: str, df: pd.DataFrame, timeout: int = 20) -> dict[str, Any]:
+    """Run LLM-written analysis code against the session's combined (in-memory) dataset.
 
-    Screened by AST first, then executed in a separate process with CPU/memory/time
-    limits. Exposes: df (all files combined), con (DuckDB), pd, np, plt, sns.
+    Screened by AST first, then executed in a separate process with CPU/time
+    limits. Exposes: df (all files combined), pd, np, plt, sns.
     """
     errs = _check(code)
     if errs:
         return {"ok": False, "error": "Code not allowed: " + "; ".join(errs), "charts": [], "stdout": ""}
 
     parent, child = multiprocessing.Pipe()
-    p = multiprocessing.Process(target=_worker, args=(code, session_dir, child))
+    p = multiprocessing.Process(target=_worker, args=(code, df, child))
     p.start()
     child.close()
     if parent.poll(timeout):

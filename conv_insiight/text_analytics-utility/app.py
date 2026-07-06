@@ -129,7 +129,7 @@ def _std_charts(df: pd.DataFrame) -> list[dict]:
 
 
 def _sample_df(session, limit: int = 50000) -> pd.DataFrame:
-    return session.con.execute(f"SELECT * FROM data LIMIT {limit}").df()
+    return session.df.head(limit)
 
 
 @app.get("/api/health")
@@ -155,7 +155,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         logger.exception("upload_parse_failed")
         raise HTTPException(400, f"Unable to read file(s): {exc}") from exc
 
-    sample = session.con.execute("SELECT * FROM data LIMIT 5000").df()
+    sample = session.df.head(5000)
     logger.info("upload_success session=%s files=%s rows=%s", session.session_id, session.files, session.row_count)
     return {
         "session_id": session.session_id,
