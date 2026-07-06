@@ -35,6 +35,13 @@ def _truncate(v: Any, n: int = 1200) -> str:
     return t if len(t) <= n else t[:n] + "... [truncated]"
 
 
+def _norm(v) -> str:
+    """Normalize a value for equality matching: strip ALL whitespace + lowercase.
+    Real survey data is inconsistent about spacing (e.g. '>=16 %' vs '>=16%',
+    '8-9%' vs '8-9 %') — comparing on exact/trimmed strings alone misses these."""
+    return "".join(str(v).lower().split())
+
+
 def _resolve(name: str, cols: list[str]) -> str:
     """Map an approximate column name to a real one (exact → normalized → substring)."""
     if name in cols:
@@ -124,6 +131,11 @@ def _t_breakdown(df, group_col, metric_col=""):
     g = _resolve(group_col, list(df.columns))
     if metric_col:
         m = _resolve(metric_col, list(df.columns))
+        if not pd.api.types.is_numeric_dtype(df[m]):
+            # metric_col isn't actually numeric (e.g. a bucketed range like
+            # "< 1%", ">=16 %") — averaging it is meaningless. Fall back to a
+            # count-based cross-tab instead of erroring.
+            return _t_crosstab(df, g, m)
         counts = df.groupby(g)[m].size()
         agg = df.groupby(g)[m].mean().round(3).sort_values(ascending=False)
         rows = [{g: str(k), f"mean_{m}": float(v)} for k, v in agg.items()]
@@ -177,8 +189,8 @@ def _t_crosstab(df, row_col, col_col):
 def _t_rank_groups(df, group_col, target_col, target_value, min_n=_MIN_N):
     g = _resolve(group_col, list(df.columns)); t = _resolve(target_col, list(df.columns))
     sub = df[[g, t]].dropna()
-    key = str(target_value).strip().lower()
-    sub["_m"] = sub[t].astype(str).str.strip().str.lower().apply(lambda v: key in v or v == key)
+    key = _norm(target_value)
+    sub["_m"] = sub[t].astype(str).map(_norm).apply(lambda v: key in v or v == key)
     grp = sub.groupby(g)
     res = pd.DataFrame({"matched": grp["_m"].sum(), "total": grp["_m"].size()})
     res["pct"] = (res["matched"] / res["total"] * 100).round(1)
@@ -202,10 +214,13 @@ def _t_filter_profile(df, filter_col, filter_value, operator="eq"):
     if operator in ("gt", "lt", "gte", "lte"):
         n = pd.to_numeric(s, errors="coerce"); v = float(filter_value)
         mask = {"gt": n > v, "lt": n < v, "gte": n >= v, "lte": n <= v}[operator]
+    elif operator == "ne":
+        mask = s.astype(str).map(_norm) != _norm(filter_value)
     else:
-        mask = s.astype(str).str.strip().str.lower() == str(filter_value).strip().lower()
+        mask = s.astype(str).map(_norm) == _norm(filter_value)
     sub = df[mask]
     total = len(df); n = len(sub); pct = round(n / total * 100, 1) if total else 0
+    caveat = _small_sample_caveat(n)
     rows = []
     for c in df.columns:
         if c == fc:
@@ -221,7 +236,7 @@ def _t_filter_profile(df, filter_col, filter_value, operator="eq"):
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.bar(["Matched", "Other"], [n, total - n], color=[_ACCENT, "#d7dbe0"])
     ax.set_title(f"{fc} {operator} {filter_value}"); ax.set_ylabel("Respondents")
-    return _pack(f"{n} of {total} ({pct}%) match {fc} {operator} {filter_value}", rows, _chart(fig, fc))
+    return _pack(f"{n} of {total} ({pct}%) match {fc} {operator} {filter_value}", rows, _chart(fig, fc), caveat)
 
 
 def _t_pivot(df, index_col, column_col, value_col=""):
