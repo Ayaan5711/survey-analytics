@@ -54,6 +54,18 @@ def _resolve(name: str, cols: list[str]) -> str:
     return hit[0] if hit else name
 
 
+def _bin_series(s: pd.Series) -> pd.Series:
+    """Bin a continuous numeric column (e.g. age) into readable ranges so
+    'group by X' doesn't treat every individual value as its own group."""
+    if not pd.api.types.is_numeric_dtype(s) or s.nunique(dropna=True) <= 10:
+        return s
+    try:
+        binned = pd.qcut(s, q=5, duplicates="drop", precision=0)
+    except ValueError:
+        return s
+    return binned.astype(str).str.replace(r"[\(\)\[\]]", "", regex=True).str.replace(", ", "-", regex=False)
+
+
 def _chart(fig, title: str = "") -> dict:
     buf = io.BytesIO()
     fig.tight_layout()
@@ -129,6 +141,7 @@ def _t_distribution(df, column):
 
 def _t_breakdown(df, group_col, metric_col=""):
     g = _resolve(group_col, list(df.columns))
+    grp_s = _bin_series(df[g])
     if metric_col:
         m = _resolve(metric_col, list(df.columns))
         if not pd.api.types.is_numeric_dtype(df[m]):
@@ -136,14 +149,15 @@ def _t_breakdown(df, group_col, metric_col=""):
             # "< 1%", ">=16 %") — averaging it is meaningless. Fall back to a
             # count-based cross-tab instead of erroring.
             return _t_crosstab(df, g, m)
-        counts = df.groupby(g)[m].size()
-        agg = df.groupby(g)[m].mean().round(3).sort_values(ascending=False)
+        tmp = pd.DataFrame({g: grp_s, m: df[m]})
+        counts = tmp.groupby(g)[m].size()
+        agg = tmp.groupby(g)[m].mean().round(3).sort_values(ascending=False)
         rows = [{g: str(k), f"mean_{m}": float(v)} for k, v in agg.items()]
         top = agg.index[0]
         caveat = _small_sample_caveat(int(counts.min())) if len(counts) else None
         return _pack(f"{m} by {g}: highest mean '{top}' ({agg.iloc[0]})", rows,
                      _chart(_bar(agg.index, agg.values, f"Mean {m} by {g}", g, f"Mean {m}"), g), caveat)
-    vc = df[g].astype(str).value_counts().head(25)
+    vc = grp_s.astype(str).value_counts().head(25)
     rows = [{g: str(k), "count": int(v)} for k, v in vc.items()]
     caveat = _small_sample_caveat(int(vc.iloc[-1])) if len(vc) else None
     return _pack(f"Counts by {g}: '{vc.index[0]}' is largest ({int(vc.iloc[0])})", rows,
@@ -189,6 +203,7 @@ def _t_crosstab(df, row_col, col_col):
 def _t_rank_groups(df, group_col, target_col, target_value, min_n=_MIN_N):
     g = _resolve(group_col, list(df.columns)); t = _resolve(target_col, list(df.columns))
     sub = df[[g, t]].dropna()
+    sub[g] = _bin_series(sub[g])
     key = _norm(target_value)
     sub["_m"] = sub[t].astype(str).map(_norm).apply(lambda v: key in v or v == key)
     grp = sub.groupby(g)
