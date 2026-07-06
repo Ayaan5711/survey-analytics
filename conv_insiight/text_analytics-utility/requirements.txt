@@ -10,4 +10,3 @@ pydantic==2.9.2
 python-dotenv==1.0.1
 matplotlib==3.9.2
 seaborn==0.13.2
-fpdf2==2.8.1

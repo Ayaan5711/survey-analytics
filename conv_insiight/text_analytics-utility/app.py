@@ -254,32 +254,21 @@ def dashboard(payload: SessionRequest) -> dict:
 
 @app.post("/api/export-report")
 def export_report(payload: SessionRequest) -> dict:
-    """Build a self-contained PDF report (overview + quality + charts) and return it base64."""
+    """Build a self-contained PDF report (overview + quality + charts) and return it
+    base64. Uses matplotlib's PdfPages (already a dependency) — no new package."""
     try:
         session = store.get(payload.session_id)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
-    from fpdf import FPDF
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from PIL import Image
 
     df = _sample_df(session)
     q = _quality(df)
     charts = _std_charts(df)
     missing_pct = round(float(df.isna().sum().sum()) / max(df.size, 1) * 100, 1)
 
-    pdf = FPDF()
-    pdf.set_auto_page_break(True, margin=15)
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 12, "Survey Insight Report", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 7, f"Dataset: {session.filename}", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 7, f"{session.row_count:,} rows (all files combined) | {len(session.columns)} columns | "
-                   f"{len(session.files)} file(s) | {missing_pct}% missing", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(3)
-
-    pdf.set_font("Helvetica", "B", 13)
-    pdf.cell(0, 9, "Data quality", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 11)
     ql = []
     if q["duplicate_rows"]:
         ql.append(f"{q['duplicate_rows']} duplicate rows")
@@ -287,20 +276,37 @@ def export_report(payload: SessionRequest) -> dict:
         ql.append(f"{len(q['mostly_empty_columns'])} mostly-empty columns")
     if q["constant_columns"]:
         ql.append(f"{len(q['constant_columns'])} constant columns")
-    pdf.multi_cell(0, 7, "- " + "\n- ".join(ql) if ql else "No major issues detected.")
-    pdf.ln(2)
+    quality_text = "\n".join(f"- {line}" for line in ql) if ql else "No major issues detected."
 
-    pdf.set_font("Helvetica", "B", 13)
-    pdf.cell(0, 9, "Charts", new_x="LMARGIN", new_y="NEXT")
-    for c in charts:
-        try:
-            img = io.BytesIO(base64.b64decode(c["image_base64"]))
-            pdf.image(img, w=180)
-            pdf.ln(2)
-        except Exception:
-            continue
+    buf = io.BytesIO()
+    with PdfPages(buf) as pdf_out:
+        # Overview + quality title page.
+        fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
+        fig.text(0.08, 0.93, "Survey Insight Report", fontsize=20, fontweight="bold")
+        fig.text(0.08, 0.88, f"Dataset: {session.filename}", fontsize=11)
+        fig.text(0.08, 0.85,
+                 f"{session.row_count:,} rows (all files combined)  |  {len(session.columns)} columns  |  "
+                 f"{len(session.files)} file(s)  |  {missing_pct}% missing", fontsize=11)
+        fig.text(0.08, 0.79, "Data quality", fontsize=13, fontweight="bold")
+        fig.text(0.08, 0.76, quality_text, fontsize=11, va="top")
+        pdf_out.savefig(fig)
+        plt.close(fig)
 
-    out = pdf.output()  # bytes/bytearray in fpdf2
-    data = bytes(out)
+        # One chart per page.
+        for c in charts:
+            try:
+                img = Image.open(io.BytesIO(base64.b64decode(c["image_base64"])))
+                fig = plt.figure(figsize=(8.27, 11.69))
+                ax = fig.add_axes((0.05, 0.1, 0.9, 0.8))
+                ax.imshow(img)
+                ax.axis("off")
+                if c.get("title"):
+                    ax.set_title(c["title"], fontsize=12)
+                pdf_out.savefig(fig)
+                plt.close(fig)
+            except Exception:
+                continue
+
+    data = buf.getvalue()
     return {"filename": f"survey_report_{session.session_id[:8]}.pdf",
             "pdf_base64": base64.b64encode(data).decode()}
