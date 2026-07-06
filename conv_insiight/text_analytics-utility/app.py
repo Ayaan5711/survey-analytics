@@ -129,7 +129,11 @@ def _std_charts(df: pd.DataFrame) -> list[dict]:
 
 
 def _sample_df(session, limit: int = 50000) -> pd.DataFrame:
-    return session.df.head(limit)
+    # Benchmarked at ~1M rows: duplicated()/nunique()/missing% all complete in
+    # well under a second, so we use the FULL dataset here rather than a head()
+    # slice — a head() sample gives misleading stats (missing %, unique counts,
+    # quality flags) whenever the file is sorted or grouped by any column.
+    return session.df
 
 
 @app.get("/api/health")
@@ -155,7 +159,14 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         logger.exception("upload_parse_failed")
         raise HTTPException(400, f"Unable to read file(s): {exc}") from exc
 
-    sample = session.df.head(5000)
+    # Full dataset, not a head() slice — see _sample_df's note above.
+    sample = session.df
+    if session.row_count > 2_000_000:
+        # Single gunicorn worker: a very large synchronous parse/stat pass can
+        # delay other users' concurrent requests. Not a hard limit — just
+        # visibility for ops if uploads start trending much larger than 1M rows.
+        logger.warning("upload_large_dataset session=%s rows=%s — may briefly delay other requests "
+                       "(single worker)", session.session_id, session.row_count)
     if session.skipped_files:
         logger.warning("upload_skipped_files session=%s skipped=%s", session.session_id, session.skipped_files)
     logger.info("upload_success session=%s files=%s rows=%s", session.session_id, session.files, session.row_count)
@@ -187,8 +198,8 @@ def chat(payload: ChatRequest) -> dict:
         logger.exception("chat_failed session=%s", payload.session_id)
         raise HTTPException(500, f"Agent failed: {exc}") from exc
 
-    session.chat_history.append({"role": "user", "content": payload.question})
-    session.chat_history.append({"role": "assistant", "content": str(resp.get("answer", ""))})
+    session.add_message("user", payload.question)
+    session.add_message("assistant", str(resp.get("answer", "")))
     return {"answer": resp.get("answer", ""), "charts": resp.get("charts", []),
             "active_sheet": session.active_sheet, "sheet_names": session.sheet_names}
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import io
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
+
+_SESSION_TTL_SECONDS = 4 * 60 * 60  # evict sessions idle this long (bounds memory over long uptime)
+_MAX_CHAT_HISTORY = 40              # keep a bit more than the agent actually reads, then trim
 
 
 def _read_any(filename: str, raw: bytes) -> list[pd.DataFrame]:
@@ -46,6 +50,17 @@ class SurveySession:
     profile: str                  # compact text profile for the LLM
     skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined
     chat_history: list[dict[str, str]] = field(default_factory=list)
+    last_active: float = field(default_factory=time.time)
+
+    def touch(self) -> None:
+        self.last_active = time.time()
+
+    def add_message(self, role: str, content: str) -> None:
+        self.chat_history.append({"role": role, "content": content})
+        if len(self.chat_history) > _MAX_CHAT_HISTORY:
+            # Bound memory for very long-running chats; the agent only ever
+            # reads the last ~16 messages anyway.
+            self.chat_history = self.chat_history[-_MAX_CHAT_HISTORY:]
 
     # Kept for frontend compatibility (his UI expects these names).
     @property
@@ -104,6 +119,8 @@ class SurveySessionStore:
             for fname, _ in group if fname not in chosen_names
         ))
 
+        self._evict_stale()
+
         session_id = str(uuid.uuid4())
         profile = _build_profile(combined, file_names, len(combined))
         session = SurveySession(
@@ -117,7 +134,16 @@ class SurveySessionStore:
         session = self._sessions.get(session_id)
         if session is None:
             raise KeyError(f"Unknown session_id: {session_id}")
+        session.touch()
         return session
+
+    def _evict_stale(self) -> None:
+        """Drop sessions idle longer than the TTL — bounds memory over long
+        server uptime now that a session can hold a 1M-row dataframe."""
+        cutoff = time.time() - _SESSION_TTL_SECONDS
+        stale = [sid for sid, s in self._sessions.items() if s.last_active < cutoff]
+        for sid in stale:
+            del self._sessions[sid]
 
     @staticmethod
     def dataframe_preview(session: SurveySession, max_rows: int = 8) -> list[dict[str, Any]]:
