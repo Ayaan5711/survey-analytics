@@ -41,9 +41,10 @@ def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
 class SurveySession:
     session_id: str
     filename: str                 # combined label, e.g. "a.xlsx + b.xlsx"
-    files: list[str]              # individual uploaded file names
+    files: list[str]              # individual uploaded file names actually combined
     df: pd.DataFrame              # all files combined (in memory, like the original design)
     profile: str                  # compact text profile for the LLM
+    skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined
     chat_history: list[dict[str, str]] = field(default_factory=list)
 
     # Kept for frontend compatibility (his UI expects these names).
@@ -95,11 +96,19 @@ class SurveySessionStore:
         combined = pd.concat([d for _, d in chosen], ignore_index=True)
         file_names = list(dict.fromkeys(fname for fname, _ in chosen))  # de-duplicated, order preserved
 
+        # Any file/sheet whose columns didn't match the majority schema is left
+        # out of the combined dataset — surface this instead of dropping it silently.
+        chosen_names = set(file_names)
+        skipped = list(dict.fromkeys(
+            fname for sig, group in groups.items() if sig != best_sig
+            for fname, _ in group if fname not in chosen_names
+        ))
+
         session_id = str(uuid.uuid4())
         profile = _build_profile(combined, file_names, len(combined))
         session = SurveySession(
             session_id=session_id, filename=" + ".join(file_names), files=file_names,
-            df=combined, profile=profile,
+            df=combined, profile=profile, skipped_files=skipped,
         )
         self._sessions[session_id] = session
         return session

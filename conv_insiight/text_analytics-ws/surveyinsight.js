@@ -302,6 +302,12 @@ async function doUpload(fileList) {
     appendMsg("system",
       `✅ Loaded: ${fileLabel}  |  ${data.shape[0].toLocaleString()} rows × ${data.shape[1]} cols`
     );
+    if (data.skipped_files && data.skipped_files.length) {
+      appendMsg("system",
+        `⚠ ${data.skipped_files.length} file(s) had a different structure and were NOT combined: ` +
+        data.skipped_files.map(escHtml).join(", ")
+      );
+    }
 
     // Kick off background AI analysis
     loadAutoInsights();

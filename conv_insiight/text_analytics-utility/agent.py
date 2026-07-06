@@ -26,6 +26,7 @@ from session_store import SurveySession
 logger = logging.getLogger("survey_agent")
 _ACCENT = "#2563eb"
 _MIN_N = 5
+_MAX_GRAPH_STEPS = 12  # ~4-5 tool calls per question (agent+tool node per call)
 
 
 # ─── shared helpers (deterministic tools compute exact numbers, then chart) ──
@@ -65,12 +66,31 @@ def _table_md(rows: list[dict]) -> str:
     return md
 
 
-def _pack(summary: str, rows: list[dict] | None, chart: dict | None) -> str:
+def _pack(summary: str, rows: list[dict] | None, chart: dict | None, caveat: str | None = None) -> str:
     payload: dict[str, Any] = {"summary": summary}
     if rows:
         payload["table_markdown"] = _table_md(rows)
     payload["charts"] = [chart] if chart else []
+    if caveat:
+        payload["caveat"] = caveat
     return json.dumps(payload, default=str)
+
+
+_MAX_CATEGORIES = 30  # cap crosstab/pivot axes so a high-cardinality column
+                      # (e.g. an ID column) can't blow up on a 1M-row dataset
+
+
+def _cap_categories(s: pd.Series, max_n: int = _MAX_CATEGORIES) -> pd.Series:
+    """Collapse all but the top `max_n` most frequent values into 'Other'."""
+    vc = s.value_counts()
+    if len(vc) <= max_n:
+        return s
+    keep = set(vc.head(max_n).index)
+    return s.where(s.isin(keep), other="Other")
+
+
+def _small_sample_caveat(n: int, label: str = "responses") -> str | None:
+    return f"Based on only {n} {label} — interpret with care." if n < _MIN_N * 2 else None
 
 
 def _bar(labels, values, title, xlabel, ylabel):
@@ -104,20 +124,24 @@ def _t_breakdown(df, group_col, metric_col=""):
     g = _resolve(group_col, list(df.columns))
     if metric_col:
         m = _resolve(metric_col, list(df.columns))
+        counts = df.groupby(g)[m].size()
         agg = df.groupby(g)[m].mean().round(3).sort_values(ascending=False)
         rows = [{g: str(k), f"mean_{m}": float(v)} for k, v in agg.items()]
         top = agg.index[0]
+        caveat = _small_sample_caveat(int(counts.min())) if len(counts) else None
         return _pack(f"{m} by {g}: highest mean '{top}' ({agg.iloc[0]})", rows,
-                     _chart(_bar(agg.index, agg.values, f"Mean {m} by {g}", g, f"Mean {m}"), g))
+                     _chart(_bar(agg.index, agg.values, f"Mean {m} by {g}", g, f"Mean {m}"), g), caveat)
     vc = df[g].astype(str).value_counts().head(25)
     rows = [{g: str(k), "count": int(v)} for k, v in vc.items()]
+    caveat = _small_sample_caveat(int(vc.iloc[-1])) if len(vc) else None
     return _pack(f"Counts by {g}: '{vc.index[0]}' is largest ({int(vc.iloc[0])})", rows,
-                 _chart(_bar(vc.index, vc.values, f"Count by {g}", g, "Count"), g))
+                 _chart(_bar(vc.index, vc.values, f"Count by {g}", g, "Count"), g), caveat)
 
 
 def _t_pie(df, column):
     col = _resolve(column, list(df.columns))
     vc = df[col].dropna().astype(str).value_counts()
+    caveat = _small_sample_caveat(int(vc.sum())) if len(vc) else None
     if len(vc) > 8:
         vc = pd.concat([vc.head(8), pd.Series({"Other": int(vc.iloc[8:].sum())})])
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -127,12 +151,16 @@ def _t_pie(df, column):
     ax.set_title(f"{col} — share"); ax.axis("equal")
     total = int(vc.sum())
     rows = [{col: k, "count": int(v), "pct": round(v / total * 100, 1)} for k, v in vc.items()]
-    return _pack(f"{col}: '{vc.index[0]}' largest share ({round(vc.iloc[0]/total*100,1)}%)", rows, _chart(fig, col))
+    return _pack(f"{col}: '{vc.index[0]}' largest share ({round(vc.iloc[0]/total*100,1)}%)", rows,
+                 _chart(fig, col), caveat)
 
 
 def _t_crosstab(df, row_col, col_col):
     r = _resolve(row_col, list(df.columns)); c = _resolve(col_col, list(df.columns))
-    ct = pd.crosstab(df[r].astype(str), df[c].astype(str))
+    row_s = _cap_categories(df[r].astype(str))
+    col_s = _cap_categories(df[c].astype(str))
+    capped = row_s.name != r or (row_s.nunique() < df[r].nunique()) or (col_s.nunique() < df[c].nunique())
+    ct = pd.crosstab(row_s, col_s)
     fig, ax = plt.subplots(figsize=(9, 5))
     x = np.arange(len(ct.index)); w = 0.8 / max(len(ct.columns), 1)
     cmap = plt.get_cmap("viridis")
@@ -141,7 +169,9 @@ def _t_crosstab(df, row_col, col_col):
     ax.set_xticks(x + w * (len(ct.columns) - 1) / 2); ax.set_xticklabels([str(i) for i in ct.index], rotation=30, ha="right")
     ax.set_title(f"{r} × {c}"); ax.set_xlabel(r); ax.set_ylabel("Count"); ax.legend(title=c, fontsize=8)
     rows = ct.reset_index().to_dict(orient="records")
-    return _pack(f"Cross-tab {r} × {c}: {len(ct.index)}×{len(ct.columns)}", rows, _chart(fig, f"{r} x {c}"))
+    caveat = (f"Both columns have many values — grouped beyond the top {_MAX_CATEGORIES} into 'Other'."
+              if capped else None)
+    return _pack(f"Cross-tab {r} × {c}: {len(ct.index)}×{len(ct.columns)}", rows, _chart(fig, f"{r} x {c}"), caveat)
 
 
 def _t_rank_groups(df, group_col, target_col, target_value, min_n=_MIN_N):
@@ -196,19 +226,26 @@ def _t_filter_profile(df, filter_col, filter_value, operator="eq"):
 
 def _t_pivot(df, index_col, column_col, value_col=""):
     i = _resolve(index_col, list(df.columns)); c = _resolve(column_col, list(df.columns))
+    idx_s = _cap_categories(df[i].astype(str))
+    col_s = _cap_categories(df[c].astype(str))
+    capped = (idx_s.nunique() < df[i].nunique()) or (col_s.nunique() < df[c].nunique())
     if value_col and pd.api.types.is_numeric_dtype(df[_resolve(value_col, list(df.columns))]):
         v = _resolve(value_col, list(df.columns))
-        pv = pd.pivot_table(df, index=i, columns=c, values=v, aggfunc="mean").round(2)
+        pv = pd.pivot_table(pd.DataFrame({i: idx_s, c: col_s, v: df[v]}),
+                            index=i, columns=c, values=v, aggfunc="mean").round(2)
         ylab = f"Mean {v}"
     else:
-        pv = pd.crosstab(df[i].astype(str), df[c].astype(str)); ylab = "Count"
+        pv = pd.crosstab(idx_s, col_s); ylab = "Count"
     fig, ax = plt.subplots(figsize=(9, 5))
     x = np.arange(len(pv.index)); w = 0.8 / max(len(pv.columns), 1)
     for j, cc in enumerate(pv.columns):
         ax.bar(x + j * w, pv[cc].values, w, label=str(cc), color=plt.get_cmap("viridis")(j / max(len(pv.columns) - 1, 1)))
     ax.set_xticks(x + w * (len(pv.columns) - 1) / 2); ax.set_xticklabels([str(k) for k in pv.index], rotation=30, ha="right")
     ax.set_title(f"{i} × {c}"); ax.set_ylabel(ylab); ax.legend(title=c, fontsize=8)
-    return _pack(f"{i} × {c}: {len(pv.index)}×{len(pv.columns)} grid", pv.reset_index().to_dict(orient="records"), _chart(fig, i))
+    caveat = (f"Both columns have many values — grouped beyond the top {_MAX_CATEGORIES} into 'Other'."
+              if capped else None)
+    return _pack(f"{i} × {c}: {len(pv.index)}×{len(pv.columns)} grid",
+                 pv.reset_index().to_dict(orient="records"), _chart(fig, i), caveat)
 
 
 # ─── tool argument schemas ──────────────────────────────────────────────────
@@ -268,6 +305,11 @@ class SurveyAnalysisAgent:
                     return fn(session.df, **kwargs)
                 except Exception as exc:
                     return json.dumps({"summary": f"Tool error: {exc}", "charts": []})
+                finally:
+                    # Safety net: close any figure left open by a tool that raised
+                    # before reaching _chart() — prevents a slow memory leak on
+                    # this long-running single-worker process.
+                    plt.close("all")
             return inner
 
         def run_python(code: str) -> str:
@@ -338,7 +380,9 @@ class SurveyAnalysisAgent:
         msgs.extend(self._history(session))
         msgs.append(("human", question))
 
-        resp = agent.invoke({"messages": msgs})
+        # Bound the tool-calling loop (like the main survey app's step cap) so a
+        # single question can't chain an unbounded number of tool calls.
+        resp = agent.invoke({"messages": msgs}, config={"recursion_limit": _MAX_GRAPH_STEPS})
         messages = resp.get("messages", [])
         if not messages:
             return {"answer": "I could not produce an analysis response.", "charts": []}

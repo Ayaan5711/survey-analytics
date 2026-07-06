@@ -156,11 +156,14 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         raise HTTPException(400, f"Unable to read file(s): {exc}") from exc
 
     sample = session.df.head(5000)
+    if session.skipped_files:
+        logger.warning("upload_skipped_files session=%s skipped=%s", session.session_id, session.skipped_files)
     logger.info("upload_success session=%s files=%s rows=%s", session.session_id, session.files, session.row_count)
     return {
         "session_id": session.session_id,
         "filename": session.filename,
         "files": session.files,
+        "skipped_files": session.skipped_files,  # schema mismatch — not included in the combined dataset
         "sheet_names": session.sheet_names,
         "active_sheet": session.active_sheet,
         "shape": [int(session.row_count), int(len(session.columns))],
