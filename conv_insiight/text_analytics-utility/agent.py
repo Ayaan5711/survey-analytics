@@ -412,7 +412,7 @@ class SurveyAnalysisAgent:
 
         self.llm = AzureChatOpenAI(
             azure_endpoint=endpoint, api_key=api_key, api_version=api_version,
-            deployment_name=deployment, temperature=0.2,
+            deployment_name=deployment, temperature=0.2, max_tokens=1024,
         )
         self.max_history_messages = 16
 
