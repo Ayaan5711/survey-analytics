@@ -349,6 +349,7 @@ async function doUpload(fileList) {
     loadAutoInsights();
 
   } catch (err) {
+    console.error("[upload]", err);
     statusMsg.textContent = `Upload error: ${err.message}`;
   } finally {
     setLoading(attachBtn, false);
@@ -485,6 +486,7 @@ async function loadAutoInsights() {
     if (insightBtn) insightBtn.textContent = "✨ Re-analyze";
 
   } catch (err) {
+    console.error("[auto-insights]", err);
     thinking.stop();
     appendMsg("system", `⚠️ Auto-analysis failed: ${err.message}`, [], "msg-system-error");
     if (insightHint) { insightHint.textContent = `Analysis failed: ${err.message}`; show(insightHint); }
@@ -600,6 +602,7 @@ chatForm.addEventListener("submit", async e => {
     }
 
   } catch (err) {
+    console.error("[chat]", err);
     thinking.stop();
     appendMsg("system", `Error: ${err.message}`, [], "msg-system-error");
   } finally {
@@ -717,6 +720,7 @@ async function loadDashboardPanel() {
     const g = buildChartGallery(d.charts || []);
     if (g) body.appendChild(g);
   } catch (err) {
+    console.error("[dashboard]", err);
     ov.querySelector(".lb-body").innerHTML = `<p style="color:#dc2626">Dashboard error: ${escHtml(err.message)}</p>`;
   } finally {
     setLoading(dashBtn, false);
@@ -776,6 +780,7 @@ async function exportReport(btn) {
     a.href = url; a.download = d.filename || "survey_report.pdf"; a.click();
     URL.revokeObjectURL(url);
   } catch (err) {
+    console.error("[report]", err);
     statusMsg.textContent = `Report error: ${err.message}`;
   } finally {
     setLoading(target, false);
