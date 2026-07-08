@@ -110,12 +110,20 @@ def _worker(code: str, df: pd.DataFrame, conn) -> None:
         plt.close(fig)
 
     res = scope.get("result")
+    truncated = False
+    if isinstance(res, (pd.DataFrame, pd.Series)) and len(res) > 200:
+        # A careless `result = df` on a 1M-row dataset would otherwise try to
+        # serialize the whole thing through the pipe and into the chat UI.
+        res, truncated = res.head(200), True
     if hasattr(res, "to_dict"):
         try:
             res = res.to_dict()
         except Exception:
             res = str(res)
-    conn.send({"ok": True, "result": res, "charts": charts, "stdout": out.getvalue()})
+    payload = {"ok": True, "result": res, "charts": charts, "stdout": out.getvalue()}
+    if truncated:
+        payload["note"] = "Result truncated to the first 200 rows."
+    conn.send(payload)
     conn.close()
 
 
@@ -134,7 +142,14 @@ def run_python_analysis_code(code: str, df: pd.DataFrame, timeout: int = 20) -> 
     p.start()
     child.close()
     if parent.poll(timeout):
-        data = parent.recv()
+        try:
+            data = parent.recv()
+        except EOFError:
+            # Worker died before sending a result (e.g. OOM-killed by the OS) —
+            # the pipe closing looks like "data ready" to poll() but recv() then
+            # has nothing to read.
+            data = {"ok": False, "error": "Execution was terminated unexpectedly (likely out of memory).",
+                    "charts": [], "stdout": ""}
     else:
         p.terminate()
         p.join(5)

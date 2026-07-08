@@ -343,7 +343,10 @@ class SurveyAnalysisAgent:
             return inner
 
         def run_python(code: str) -> str:
-            resp = run_python_analysis_code(code, session.df)
+            try:
+                resp = run_python_analysis_code(code, session.df)
+            except Exception as exc:
+                resp = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "charts": [], "stdout": ""}
             return json.dumps(resp, default=str)
 
         def dataset_schema() -> str:
