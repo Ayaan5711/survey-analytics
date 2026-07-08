@@ -5,9 +5,11 @@ import io
 import logging
 import os
 import re
+import time
+import uuid
 
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -27,6 +29,27 @@ app = FastAPI(title="Survey Insight Agent API", version="2.0.0")
 # FastAPI is an internal service reached only by the Java servlet (localhost);
 # the browser never calls it directly. Kept permissive for that local proxy.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    # X-Request-Id is set by ConvInsightServlet.java per request — reusing it
+    # here lets a single request be traced across both the Java and Python
+    # logs by grepping one id. Falls back to a fresh id when called directly
+    # (e.g. local testing without the servlet in front).
+    req_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:8]
+    request.state.req_id = req_id
+    t0 = time.time()
+    logger.info("[%s] -> %s %s", req_id, request.method, request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("[%s] unhandled error in %s %s", req_id, request.method, request.url.path)
+        raise
+    logger.info("[%s] <- %s %s status=%s %dms", req_id, request.method, request.url.path,
+                response.status_code, int((time.time() - t0) * 1000))
+    return response
+
 
 store = SurveySessionStore()
 
@@ -153,7 +176,8 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/upload")
-async def upload(files: list[UploadFile] = File(...)) -> dict:
+async def upload(request: Request, files: list[UploadFile] = File(...)) -> dict:
+    req_id = getattr(request.state, "req_id", "-")
     uploads: list[tuple[str, bytes]] = []
     for f in files:
         name = f.filename or "data.xlsx"
@@ -167,7 +191,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
     try:
         session = store.create_from_uploads(uploads)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("upload_parse_failed")
+        logger.exception("[%s] upload_parse_failed", req_id)
         raise HTTPException(400, f"Unable to read file(s): {exc}") from exc
 
     # Full dataset, not a head() slice — see _sample_df's note above.
@@ -176,11 +200,11 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         # Single gunicorn worker: a very large synchronous parse/stat pass can
         # delay other users' concurrent requests. Not a hard limit — just
         # visibility for ops if uploads start trending much larger than 1M rows.
-        logger.warning("upload_large_dataset session=%s rows=%s — may briefly delay other requests "
-                       "(single worker)", session.session_id, session.row_count)
+        logger.warning("[%s] upload_large_dataset session=%s rows=%s — may briefly delay other requests "
+                       "(single worker)", req_id, session.session_id, session.row_count)
     if session.skipped_files:
-        logger.warning("upload_skipped_files session=%s skipped=%s", session.session_id, session.skipped_files)
-    logger.info("upload_success session=%s files=%s rows=%s", session.session_id, session.files, session.row_count)
+        logger.warning("[%s] upload_skipped_files session=%s skipped=%s", req_id, session.session_id, session.skipped_files)
+    logger.info("[%s] upload_success session=%s files=%s rows=%s", req_id, session.session_id, session.files, session.row_count)
     return {
         "session_id": session.session_id,
         "filename": session.filename,
@@ -196,18 +220,21 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
 
 
 @app.post("/api/chat")
-def chat(payload: ChatRequest) -> dict:
+def chat(payload: ChatRequest, request: Request) -> dict:
+    req_id = getattr(request.state, "req_id", "-")
     if survey_agent is None:
         raise HTTPException(500, "Agent is not configured.")
     try:
         session = store.get(payload.session_id)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
+    t0 = time.time()
     try:
         resp = survey_agent.answer(session, payload.question)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("chat_failed session=%s", payload.session_id)
+        logger.exception("[%s] chat_failed session=%s", req_id, payload.session_id)
         raise HTTPException(500, f"Agent failed: {exc}") from exc
+    logger.info("[%s] chat_ok session=%s in %dms", req_id, payload.session_id, int((time.time() - t0) * 1000))
 
     session.add_message("user", payload.question)
     session.add_message("assistant", str(resp.get("answer", "")))
@@ -216,7 +243,8 @@ def chat(payload: ChatRequest) -> dict:
 
 
 @app.post("/api/auto-insights")
-def auto_insights(payload: AutoInsightsRequest) -> dict:
+def auto_insights(payload: AutoInsightsRequest, request: Request) -> dict:
+    req_id = getattr(request.state, "req_id", "-")
     if survey_agent is None:
         raise HTTPException(500, "Agent not configured.")
     try:
@@ -234,7 +262,7 @@ def auto_insights(payload: AutoInsightsRequest) -> dict:
     try:
         resp = survey_agent.answer(session, prompt)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("auto_insights_failed session=%s", payload.session_id)
+        logger.exception("[%s] auto_insights_failed session=%s", req_id, payload.session_id)
         raise HTTPException(500, f"Agent failed: {exc}") from exc
 
     answer = str(resp.get("answer", ""))
