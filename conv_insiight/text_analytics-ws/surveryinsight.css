@@ -833,12 +833,13 @@ body {
 /* --------- SUGGESTED QUESTIONS --------------------------------------------------- */
 .sugg-bar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: .5rem;
-  padding: .5rem .75rem;
+  padding: .4rem .75rem;
   border-top: 1px solid var(--border-light);
   background: rgba(255,255,255,.65);
-  flex-wrap: wrap;
+  max-height: 2.4rem;   /* one line -- was wrapping to several lines and eating the middle of the chat panel */
+  overflow: hidden;
 }
 
 .sugg-label {
@@ -846,13 +847,15 @@ body {
   font-weight: 600;
   color: var(--ink-soft);
   white-space: nowrap;
-  padding-top: .15rem;
+  flex-shrink: 0;
 }
 
 .sugg-chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;       /* scroll sideways instead of wrapping to multiple lines */
+  overflow-x: auto;
   gap: .32rem;
+  scrollbar-width: thin;
 }
 
 .sugg-chip {
@@ -866,6 +869,8 @@ body {
   cursor: pointer;
   transition: background .15s, border-color .15s, color .15s;
   text-align: left;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .sugg-chip:hover {

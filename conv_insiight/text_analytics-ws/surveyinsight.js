@@ -657,7 +657,10 @@ mobTabs.querySelectorAll(".mob-tab").forEach(btn => {
 // Default mobile view: data panel first (chat after upload)
 switchMobTab("data");
 
-// Resume a previous session after a page refresh (server keeps the data on disk).
+// Resume a previous session id after a page refresh. Sessions are in-memory
+// only (no disk persistence) and are evicted after 4h idle, so a resumed id
+// can be stale -- any call with it will get a clean 404 handled below rather
+// than silently failing.
 try {
   const saved = localStorage.getItem("convinsight_session");
   if (saved) {
