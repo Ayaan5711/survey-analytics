@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import logging
+import re
 from typing import Any
 
 import matplotlib
@@ -278,6 +279,85 @@ def _t_pivot(df, index_col, column_col, value_col=""):
                  pv.reset_index().to_dict(orient="records"), _chart(fig, i), caveat)
 
 
+_STOPWORDS = {
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "have",
+    "has", "not", "but", "you", "your", "from", "they", "them", "will", "can",
+    "all", "any", "some", "into", "than", "then", "also", "very", "our", "its",
+}
+
+
+def _t_open_text(df, column):
+    """Summarize a free-text/open-ended column: most common exact responses
+    (many open-text survey questions are actually near-categorical, e.g.
+    place names) plus a word-frequency chart across all responses."""
+    col = _resolve(column, list(df.columns))
+    s = df[col].dropna().astype(str).str.strip()
+    s = s[s != ""]
+    if s.empty:
+        return _pack(f"{col}: no non-empty text responses.", None, None)
+
+    vc = s.value_counts()
+    top_exact = vc.head(10)
+    rows = [{col: k, "count": int(v), "pct": round(v / len(s) * 100, 1)} for k, v in top_exact.items()]
+
+    words: dict[str, int] = {}
+    for resp in s:
+        for w in re.findall(r"[A-Za-z']+", resp.lower()):
+            if len(w) >= 3 and w not in _STOPWORDS:
+                words[w] = words.get(w, 0) + 1
+    top_words = sorted(words.items(), key=lambda kv: -kv[1])[:15]
+
+    chart = None
+    if top_words:
+        fig = _bar([w for w, _ in top_words], [c for _, c in top_words],
+                   f"{col} — most common words", "Word", "Occurrences")
+        chart = _chart(fig, col)
+
+    caveat = _small_sample_caveat(len(s))
+    unique_pct = round(s.nunique() / len(s) * 100, 1)
+    summary = (f"{col}: {len(s)} responses, {s.nunique()} unique ({unique_pct}% unique). "
+               f"Most common exact response: '{top_exact.index[0]}' ({int(top_exact.iloc[0])}x).")
+    return _pack(summary, rows, chart, caveat)
+
+
+def _t_compare_segments(df, group_col, value_a, value_b, metric_col=""):
+    """Side-by-side comparison of two segments of the same column (e.g.
+    City=Chennai vs City=Mumbai) across counts or a numeric metric's mean."""
+    g = _resolve(group_col, list(df.columns))
+    key_a, key_b = _norm(value_a), _norm(value_b)
+    norm_col = df[g].astype(str).map(_norm)
+    sub_a = df[norm_col == key_a]
+    sub_b = df[norm_col == key_b]
+    if sub_a.empty or sub_b.empty:
+        missing = value_a if sub_a.empty else value_b
+        return _pack(f"No rows found where {g} = '{missing}'.", None, None)
+
+    if metric_col:
+        m = _resolve(metric_col, list(df.columns))
+        if pd.api.types.is_numeric_dtype(df[m]):
+            val_a, val_b = round(float(sub_a[m].mean()), 3), round(float(sub_b[m].mean()), 3)
+            ylabel = f"Mean {m}"
+        else:
+            val_a, val_b = len(sub_a), len(sub_b)
+            ylabel = "Count"
+    else:
+        val_a, val_b = len(sub_a), len(sub_b)
+        ylabel = "Count"
+
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    ax.bar([str(value_a), str(value_b)], [val_a, val_b], color=[_ACCENT, "#f59e0b"])
+    ax.set_title(f"{value_a} vs {value_b} — {ylabel}"); ax.set_ylabel(ylabel)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+
+    rows = [{g: str(value_a), ylabel: val_a, "n": len(sub_a)},
+            {g: str(value_b), ylabel: val_b, "n": len(sub_b)}]
+    caveat = _small_sample_caveat(min(len(sub_a), len(sub_b)))
+    winner = value_a if val_a >= val_b else value_b
+    return _pack(f"{value_a} ({val_a}) vs {value_b} ({val_b}) on {ylabel}: '{winner}' is higher.",
+                 rows, _chart(fig, g), caveat)
+
+
 # ─── tool argument schemas ──────────────────────────────────────────────────
 class OneCol(BaseModel):
     column: str = Field(description="Column name")
@@ -304,6 +384,15 @@ class Pivot(BaseModel):
     index_col: str = Field(description="Row grouping column")
     column_col: str = Field(description="Column grouping column")
     value_col: str = Field("", description="Optional numeric column to average; omit for counts")
+
+class OpenText(BaseModel):
+    column: str = Field(description="Free-text/open-ended column name")
+
+class Compare(BaseModel):
+    group_col: str = Field(description="Column holding the two segments to compare, e.g. City")
+    value_a: str = Field(description="First segment value, e.g. Chennai")
+    value_b: str = Field(description="Second segment value, e.g. Mumbai")
+    metric_col: str = Field("", description="Optional numeric column to compare means of; omit to compare counts")
 
 class PyCode(BaseModel):
     code: str = Field(description="Python using df (all files combined), pd, np, plt. Assign to `result`.")
@@ -370,6 +459,10 @@ class SurveyAnalysisAgent:
               description="Subset respondents by a condition, then profile that subset. Use for 'profile of respondents who <condition>'."),
             T(name="pivot_table", func=wrap(_t_pivot), args_schema=Pivot,
               description="Two-dimensional breakdown (index × column), means or counts. Use for 'show X by A and B'."),
+            T(name="open_text_analysis", func=wrap(_t_open_text), args_schema=OpenText,
+              description="Summarize a free-text/open-ended column: top exact responses + a word-frequency chart. Use for 'what did people say about X' / 'common themes in X'."),
+            T(name="compare_segments", func=wrap(_t_compare_segments), args_schema=Compare,
+              description="Side-by-side comparison of two specific values of a column (e.g. City=Chennai vs City=Mumbai) by count or a metric's mean. Use for 'compare A vs B'."),
             T(name="run_python", func=run_python, args_schema=PyCode,
               description="FALLBACK for custom analysis/charts no other tool covers. df is all files combined; assign result."),
         ]
@@ -404,8 +497,9 @@ class SurveyAnalysisAgent:
         system = (
             "You are a senior survey analyst. Prefer the deterministic tools "
             "(distribution, breakdown, pie_chart, crosstab, rank_groups_by_value, "
-            "filter_profile, pivot_table) so numbers are exact; use run_python only "
-            "for custom charts no tool covers. The dataset is ALL uploaded files combined. "
+            "filter_profile, pivot_table, open_text_analysis, compare_segments) so numbers "
+            "are exact; use run_python only for custom charts no tool covers. "
+            "The dataset is ALL uploaded files combined. "
             "Always include the tool's numbers (as a markdown table when returned) and a short interpretation.\n\n"
             f"{session.profile}"
         )
