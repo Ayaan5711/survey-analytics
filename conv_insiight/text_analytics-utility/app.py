@@ -96,6 +96,17 @@ class SessionRequest(BaseModel):
     session_id: str
 
 
+class PinnedChart(BaseModel):
+    title: str = ""
+    mime_type: str = "image/png"
+    image_base64: str
+
+
+class ExportReportRequest(BaseModel):
+    session_id: str
+    charts: list[PinnedChart] = []  # user-pinned charts from chat/dashboard; falls back to standard charts if empty
+
+
 # ─── Deterministic dashboard: stats + quality + a few standard charts ───────
 def _quality(df: pd.DataFrame) -> dict:
     total = max(len(df), 1)
@@ -267,9 +278,13 @@ def dashboard(payload: SessionRequest) -> dict:
 
 
 @app.post("/api/export-report")
-def export_report(payload: SessionRequest) -> dict:
+def export_report(payload: ExportReportRequest) -> dict:
     """Build a self-contained PDF report (overview + quality + charts) and return it
-    base64. Uses matplotlib's PdfPages (already a dependency) — no new package."""
+    base64. Uses matplotlib's PdfPages (already a dependency) — no new package.
+
+    If the caller pins specific charts from chat/dashboard (payload.charts), the
+    report uses exactly those instead of the 3 standard dashboard charts — this
+    is what backs the "pin to report" button in the UI."""
     try:
         session = store.get(payload.session_id)
     except KeyError as exc:
@@ -280,7 +295,7 @@ def export_report(payload: SessionRequest) -> dict:
 
     df = _sample_df(session)
     q = _quality(df)
-    charts = _std_charts(df)
+    charts = [c.dict() for c in payload.charts] if payload.charts else _std_charts(df)
     missing_pct = round(float(df.isna().sum().sum()) / max(df.size, 1) * 100, 1)
 
     ql = []

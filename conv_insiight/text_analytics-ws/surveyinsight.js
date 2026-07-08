@@ -1,10 +1,8 @@
-﻿﻿/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-   SURVEY INSIGHT AGENT â€” Frontend
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+﻿/* SURVEY INSIGHT AGENT — Frontend */
 
 const API_BASE = "/TextAnalyticsWebUtility-WS/ConvInsightServlet";
 
-// â”€â”€â”€ STATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- STATE ------------------------------------------------------------------------------------------------------------------------------
 let sessionId      = null;
 let activeSheet    = null;
 let allColumns     = [];       // full column_info array from upload
@@ -12,7 +10,7 @@ let chatHistory    = [];       // {role, text} for export
 let colsExpanded   = false;
 const COL_PREVIEW  = 12;
 
-// â”€â”€â”€ DOM REFS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- DOM REFS ------------------------------------------------------------------------------------------------------------------------
 const excelFile    = document.getElementById("excelFile");
 const uploadBtn    = document.getElementById("uploadBtn");
 const dropZone     = document.getElementById("dropZone");
@@ -48,7 +46,7 @@ const mobTabs      = document.getElementById("mobTabs");
 const sidePanel    = document.getElementById("sidePanel");
 const chatPanel    = document.getElementById("chatPanel");
 
-// â”€â”€â”€ HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- HELPERS ---------------------------------------------------------------------------------------------------------------------------
 function escHtml(v) {
   return String(v)
     .replace(/&/g,"&amp;").replace(/</g,"&lt;")
@@ -77,7 +75,7 @@ function setLoading(btn, on) {
 function show(el) { el.hidden = false; }
 function hide(el) { el.hidden = true; }
 
-// â”€â”€â”€ MARKDOWN RENDERER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- MARKDOWN RENDERER ---------------------------------------------------------------------------------------------
 function parseMarkdownTable(lines, start) {
   const rows = [];
   let i = start;
@@ -137,7 +135,7 @@ function renderMd(text) {
   return html;
 }
 
-// â”€â”€â”€ CHART GALLERY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- CHART GALLERY ---------------------------------------------------------------------------------------------------------
 function openLightbox(src, title) {
   const ov = document.createElement("div");
   ov.className = "lightbox";
@@ -157,6 +155,33 @@ function openLightbox(src, title) {
     img.style.transform = `scale(${scale})`;
   }, { passive: false });
   document.body.appendChild(ov);
+}
+
+// Pinned charts for the PDF report ("canvas"), like the original survey app's pin-to-report.
+let pinnedCharts = [];
+
+function chartKey(c) { return (c.title || "") + "|" + (c.image_base64 || "").slice(0, 40); }
+
+function updatePinBadge() {
+  const badge = document.getElementById("pinBadge");
+  if (!badge) return;
+  badge.textContent = pinnedCharts.length;
+  badge.hidden = pinnedCharts.length === 0;
+}
+
+function togglePin(c, btn) {
+  const key = chartKey(c);
+  const idx = pinnedCharts.findIndex(p => chartKey(p) === key);
+  if (idx >= 0) {
+    pinnedCharts.splice(idx, 1);
+    btn.classList.remove("pinned");
+    btn.textContent = "📌 Pin";
+  } else {
+    pinnedCharts.push({ title: c.title || "Chart", mime_type: c.mime_type || "image/png", image_base64: c.image_base64 });
+    btn.classList.add("pinned");
+    btn.textContent = "📌 Pinned";
+  }
+  updatePinBadge();
 }
 
 function buildChartGallery(charts) {
@@ -179,6 +204,17 @@ function buildChartGallery(charts) {
 
     const bar = document.createElement("div");
     bar.className = "chart-actions";
+
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "chart-dl chart-pin";
+    const alreadyPinned = pinnedCharts.some(p => chartKey(p) === chartKey(c));
+    if (alreadyPinned) pin.classList.add("pinned");
+    pin.textContent = alreadyPinned ? "📌 Pinned" : "📌 Pin";
+    pin.title = "Pin this chart into the PDF report";
+    pin.addEventListener("click", () => togglePin(c, pin));
+    bar.appendChild(pin);
+
     const dl = document.createElement("a");
     dl.href = src;
     dl.download = ((c.title || "chart").replace(/\s+/g, "_")) + ".png";
@@ -197,7 +233,7 @@ function buildChartGallery(charts) {
   return gallery.children.length ? gallery : null;
 }
 
-// â”€â”€â”€ CHAT MESSAGES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- CHAT MESSAGES ---------------------------------------------------------------------------------------------------------
 function hideEmptyState() {
   if (emptyState) emptyState.style.display = "none";
 }
@@ -224,10 +260,10 @@ function appendMsg(kind, text, charts = [], extraClass = "") {
 function showThinking(label = "Thinking") {
   hideEmptyState();
   const phases = [
-    "Reading your questionâ€¦",
-    "Inspecting data schemaâ€¦",
-    "Running analysisâ€¦",
-    "Drafting insightsâ€¦",
+    "Reading your question…",
+    "Inspecting data schema…",
+    "Running analysis…",
+    "Drafting insights…",
   ];
   const div = document.createElement("div");
   div.className = "chat-message msg-assistant msg-thinking";
@@ -255,7 +291,7 @@ function showThinking(label = "Thinking") {
   return { stop: () => { clearInterval(iv); div.remove(); } };
 }
 
-// â”€â”€â”€ UPLOAD LOGIC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- UPLOAD LOGIC ------------------------------------------------------------------------------------------------------------
 uploadBtn.addEventListener("click", () => excelFile.click());
 attachBtn.addEventListener("click", () => excelFile.click());
 reUpBtn  .addEventListener("click", () => excelFile.click());
@@ -319,11 +355,11 @@ async function doUpload(fileList) {
   }
 }
 
-// â”€â”€â”€ DASHBOARD POPULATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- DASHBOARD POPULATION ------------------------------------------------------------------------------------
 function populateDashboard(data) {
   // File card
   fcName.textContent = data.filename;
-  fcMeta.textContent = `${data.shape[0].toLocaleString()} rows Â· ${data.shape[1]} cols Â· ${data.sheet_names.length} sheet(s)`;
+  fcMeta.textContent = `${data.shape[0].toLocaleString()} rows · ${data.shape[1]} cols · ${data.sheet_names.length} sheet(s)`;
   hide(uploadSection);
   show(fileCard);
 
@@ -382,8 +418,8 @@ function renderColumnList(cols) {
   if (cols.length > COL_PREVIEW) {
     show(colShowMore);
     colShowMore.textContent = colsExpanded
-      ? "Show fewer â–´"
-      : `Show all ${cols.length} columns â–¾`;
+      ? "Show fewer ▴"
+      : `Show all ${cols.length} columns ▾`;
   } else {
     hide(colShowMore);
   }
@@ -405,7 +441,7 @@ function switchSheet(name) {
   });
 }
 
-// â”€â”€â”€ AUTO-INSIGHTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- AUTO-INSIGHTS ------------------------------------------------------------------------------------------------------------
 async function loadAutoInsights() {
   if (!sessionId) return;
   const thinking = showThinking("Analyzing your data");
@@ -432,7 +468,7 @@ async function loadAutoInsights() {
 
     // Render rich auto-insight message in chat
     appendMsg("auto-insight",
-      `### ðŸ” Automatic Analysis\n${data.answer}`,
+      `### 🔍 Automatic Analysis\n${data.answer}`,
       data.charts || []
     );
 
@@ -443,7 +479,7 @@ async function loadAutoInsights() {
 
   } catch (err) {
     thinking.stop();
-    appendMsg("system", `âš ï¸ Auto-analysis failed: ${err.message}`);
+    appendMsg("system", `⚠️ Auto-analysis failed: ${err.message}`);
     // Still hide skeleton
     if (insightSkel) insightSkel.style.display = "none";
   }
@@ -474,7 +510,7 @@ function renderInsightSummary(data) {
   } else {
     // Show first 160 chars of answer
     const preview = (data.answer || "").replace(/#+\s*/g,"").trim().slice(0, 160);
-    html += `<p style="font-size:.78rem;color:var(--ink-soft);margin:0">${escHtml(preview)}â€¦</p>`;
+    html += `<p style="font-size:.78rem;color:var(--ink-soft);margin:0">${escHtml(preview)}…</p>`;
   }
 
   insightContent.innerHTML = html;
@@ -499,7 +535,7 @@ function renderSuggestedQuestions(questions) {
   show(suggBar);
 }
 
-// â”€â”€â”€ CHAT FORM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- CHAT FORM ---------------------------------------------------------------------------------------------------------------------
 function autoResize() {
   msgInput.style.height = "auto";
   msgInput.style.height = Math.min(msgInput.scrollHeight, 130) + "px";
@@ -556,11 +592,11 @@ chatForm.addEventListener("submit", async e => {
   }
 });
 
-// â”€â”€â”€ EXPORT CHAT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- EXPORT CHAT ---------------------------------------------------------------------------------------------------------------
 exportBtn.addEventListener("click", () => {
   if (!chatHistory.length) return;
   const lines = chatHistory.map(m => `[${m.role.toUpperCase()}]\n${m.text}`).join("\n\n---\n\n");
-  const header = `Survey Insight Chat Export\nSession: ${sessionId || "unknown"}\nExported: ${new Date().toLocaleString()}\n${"â•".repeat(50)}\n\n`;
+  const header = `Survey Insight Chat Export\nSession: ${sessionId || "unknown"}\nExported: ${new Date().toLocaleString()}\n${"=".repeat(50)}\n\n`;
   const blob = new Blob([header + lines], { type: "text/plain;charset=utf-8" });
   const a  = document.createElement("a");
   a.href   = URL.createObjectURL(blob);
@@ -569,7 +605,7 @@ exportBtn.addEventListener("click", () => {
   URL.revokeObjectURL(a.href);
 });
 
-// â”€â”€â”€ CLEAR CHAT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- CLEAR CHAT ------------------------------------------------------------------------------------------------------------------
 clearBtn.addEventListener("click", () => {
   if (!confirm("Clear the entire chat history?")) return;
   chatLog.innerHTML = "";
@@ -590,7 +626,7 @@ clearBtn.addEventListener("click", () => {
   chatLog.appendChild(es);
 });
 
-// â”€â”€â”€ MOBILE TABS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- MOBILE TABS ---------------------------------------------------------------------------------------------------------------
 function switchMobTab(tab) {
   if (!mobTabs) return;
   mobTabs.querySelectorAll(".mob-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
@@ -615,16 +651,28 @@ try {
   }
 } catch (e) {}
 
-// ─── DASHBOARD + PDF REPORT ─────────────────────────────────────────────────
-const dashBtn      = document.getElementById("dashBtn");
-const reportBtn    = document.getElementById("reportBtn");
-const dashboardBlk = document.getElementById("dashboardBlock");
+// ─── DASHBOARD + PDF REPORT (both open as full overlays, not squeezed into the sidebar) ──
+const dashBtn   = document.getElementById("dashBtn");
+const reportBtn = document.getElementById("reportBtn");
+
+function openOverlay(title, bodyHtml) {
+  const ov = document.createElement("div");
+  ov.className = "lightbox wide";
+  ov.innerHTML =
+    `<div class="lb-inner"><div class="lb-head"><span>${escHtml(title)}</span>` +
+    `<button class="lb-close" aria-label="Close">×</button></div>` +
+    `<div class="lb-body">${bodyHtml}</div></div>`;
+  const close = () => ov.remove();
+  ov.addEventListener("click", e => { if (e.target === ov || e.target.classList.contains("lb-close")) close(); });
+  document.addEventListener("keydown", function esc(e){ if(e.key==="Escape"){ close(); document.removeEventListener("keydown", esc);} });
+  document.body.appendChild(ov);
+  return ov;
+}
 
 async function loadDashboardPanel() {
   if (!sessionId) return;
   setLoading(dashBtn, true);
-  dashboardBlk.hidden = false;
-  dashboardBlk.innerHTML = '<p class="blk-label">Loading dashboard…</p>';
+  const ov = openOverlay("Dashboard", '<p class="blk-label">Loading dashboard…</p>');
   try {
     const res = await fetch(API_BASE, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -639,29 +687,67 @@ async function loadDashboardPanel() {
     if ((q.mostly_empty_columns || []).length) qs.push(`${q.mostly_empty_columns.length} mostly-empty cols`);
     if ((q.constant_columns || []).length) qs.push(`${q.constant_columns.length} constant cols`);
 
-    let html = '<p class="blk-label">Dashboard</p><div class="dash-stats">';
+    let html = '<div class="dash-stats">';
     html += `<div class="stat-tile"><span class="st-val">${numFmt(d.stats.rows)}</span><span class="st-lbl">Rows</span></div>`;
     html += `<div class="stat-tile"><span class="st-val">${d.stats.columns}</span><span class="st-lbl">Columns</span></div>`;
     html += `<div class="stat-tile"><span class="st-val">${d.stats.files_count}</span><span class="st-lbl">Files</span></div>`;
     html += `<div class="stat-tile warn-tile"><span class="st-val">${d.stats.missing_pct}%</span><span class="st-lbl">Missing</span></div></div>`;
     html += `<div class="dash-quality">${qs.length ? "⚠ " + qs.join(" · ") : "✓ No major quality issues"}</div>`;
-    dashboardBlk.innerHTML = html;
+    const body = ov.querySelector(".lb-body");
+    body.innerHTML = html;
     const g = buildChartGallery(d.charts || []);
-    if (g) dashboardBlk.appendChild(g);
+    if (g) body.appendChild(g);
   } catch (err) {
-    dashboardBlk.innerHTML = `<p class="blk-label" style="color:#dc2626">Dashboard error: ${escHtml(err.message)}</p>`;
+    ov.querySelector(".lb-body").innerHTML = `<p style="color:#dc2626">Dashboard error: ${escHtml(err.message)}</p>`;
   } finally {
     setLoading(dashBtn, false);
   }
 }
 
-async function exportReport() {
+// Report overlay: review/remove pinned charts (from chat or dashboard), then export a PDF
+// built from exactly those — the "pin to report" workflow from the original survey app.
+// With nothing pinned, it falls back to the standard 3-chart dashboard report.
+function renderReportOverlay() {
+  let html = pinnedCharts.length
+    ? `<p class="blk-label">${pinnedCharts.length} chart(s) pinned for this report</p>`
+    : `<p class="blk-label">No charts pinned yet — click "📌 Pin" under any chart in chat or the dashboard. Exporting now will use the standard dashboard report instead.</p>`;
+  html += '<div class="chart-gallery report-canvas">';
+  pinnedCharts.forEach((c, i) => {
+    const src = `data:${c.mime_type || "image/png"};base64,${c.image_base64}`;
+    html += `<figure class="chart-card"><img src="${src}" alt="${escHtml(c.title)}">` +
+            `<div class="chart-actions"><button type="button" class="chart-dl" data-unpin="${i}">✕ Remove</button></div>` +
+            `<figcaption>${escHtml(c.title)}</figcaption></figure>`;
+  });
+  html += '</div><button id="genReportBtn" class="btn-ghost-sm" style="margin-top:10px">⤓ Download PDF Report</button>';
+  return html;
+}
+
+function openReportOverlay() {
+  const ov = openOverlay("Report", renderReportOverlay());
+  wireReportOverlay(ov);
+}
+
+function wireReportOverlay(ov) {
+  ov.querySelectorAll("[data-unpin]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      pinnedCharts.splice(Number(btn.dataset.unpin), 1);
+      updatePinBadge();
+      ov.querySelector(".lb-body").innerHTML = renderReportOverlay();
+      wireReportOverlay(ov);
+    });
+  });
+  const genBtn = ov.querySelector("#genReportBtn");
+  if (genBtn) genBtn.addEventListener("click", () => exportReport(genBtn));
+}
+
+async function exportReport(btn) {
   if (!sessionId) return;
-  setLoading(reportBtn, true);
+  const target = btn || reportBtn;
+  setLoading(target, true);
   try {
     const res = await fetch(API_BASE, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "report", session_id: sessionId }),
+      body: JSON.stringify({ action: "report", session_id: sessionId, charts: pinnedCharts }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || "Report failed");
@@ -673,9 +759,9 @@ async function exportReport() {
   } catch (err) {
     statusMsg.textContent = `Report error: ${err.message}`;
   } finally {
-    setLoading(reportBtn, false);
+    setLoading(target, false);
   }
 }
 
 if (dashBtn)   dashBtn.addEventListener("click", loadDashboardPanel);
-if (reportBtn) reportBtn.addEventListener("click", exportReport);
+if (reportBtn) reportBtn.addEventListener("click", openReportOverlay);

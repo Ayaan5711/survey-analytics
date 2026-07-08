@@ -30,7 +30,7 @@
         </div>
         <div class="header-end">
           <span id="dataTypeBadge" class="data-type-badge" hidden></span>
-          <div class="status-pill"><span class="live-dot"></span>Excel Agent Online</div>
+          <div class="status-pill"><span class="live-dot"></span>Survey Agent Online</div>
         </div>
       </header>
 
@@ -63,9 +63,9 @@
                   <rect x="14" y="37" width="28" height="3" rx="1.5" fill="#bfdbfe"/>
                 </svg>
               </div>
-              <p class="dz-title">Drop Excel file here</p>
+              <p class="dz-title">Drop CSV or Excel file here</p>
               <p class="dz-sub">or <button id="uploadBtn" class="btn-link" type="button">browse files</button></p>
-              <p class="dz-hint">.xlsx · .xls · .xlsm</p>
+              <p class="dz-hint">.csv · .xlsx · .xls · .xlsm — multiple files supported</p>
             </div>
           </div>
 
@@ -95,9 +95,10 @@
           <!-- Dashboard + report actions (after upload) -->
           <div class="panel-block dash-actions" id="dashActions" hidden>
             <button id="dashBtn" class="btn-ghost-sm">📊 Dashboard</button>
-            <button id="reportBtn" class="btn-ghost-sm">⤓ Export Report (PDF)</button>
+            <button id="reportBtn" class="btn-ghost-sm">
+              🧾 Report<span id="pinBadge" class="pin-badge" hidden>0</span>
+            </button>
           </div>
-          <div class="panel-block" id="dashboardBlock" hidden></div>
 
           <!-- Sheet tabs (after upload) -->
           <div class="panel-block" id="sheetBlock" hidden>
@@ -177,7 +178,7 @@
           <!-- Composer -->
           <form id="chatForm" class="composer" autocomplete="off">
             <div class="cmp-row">
-              <button id="attachBtn" class="cmp-btn cmp-attach" type="button" aria-label="Upload Excel file" title="Upload a different file">
+              <button id="attachBtn" class="cmp-btn cmp-attach" type="button" aria-label="Upload CSV or Excel file" title="Upload a different file (CSV or Excel)">
                 <svg viewBox="0 0 20 20" fill="none" width="17" height="17"><path d="M13.5 6.5L8 12a2 2 0 002.83 2.83L17 9a4 4 0 00-5.66-5.66L4.52 10.16a6 6 0 108.49 8.49" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
               <textarea id="msgInput" rows="1" placeholder="Ask about trends, segments, patterns, or request a chart…"></textarea>
