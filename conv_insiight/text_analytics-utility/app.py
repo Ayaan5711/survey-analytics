@@ -37,16 +37,21 @@ async def log_requests(request: Request, call_next):
     # here lets a single request be traced across both the Java and Python
     # logs by grepping one id. Falls back to a fresh id when called directly
     # (e.g. local testing without the servlet in front).
+    #
+    # NOTE: these tracing lines use logger.error (not .info/.warning) because
+    # the production log config here only surfaces ERROR and above — using
+    # .info would make these invisible in the real server logs. They are
+    # normal operational trace lines, not failures.
     req_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:8]
     request.state.req_id = req_id
     t0 = time.time()
-    logger.info("[%s] -> %s %s", req_id, request.method, request.url.path)
+    logger.error("[%s] -> %s %s", req_id, request.method, request.url.path)
     try:
         response = await call_next(request)
     except Exception:
         logger.exception("[%s] unhandled error in %s %s", req_id, request.method, request.url.path)
         raise
-    logger.info("[%s] <- %s %s status=%s %dms", req_id, request.method, request.url.path,
+    logger.error("[%s] <- %s %s status=%s %dms", req_id, request.method, request.url.path,
                 response.status_code, int((time.time() - t0) * 1000))
     return response
 
@@ -56,7 +61,7 @@ store = SurveySessionStore()
 try:
     survey_agent = SurveyAnalysisAgent()
     startup_error = ""
-    logger.info("agent_init_ok")
+    logger.error("agent_init_ok")
 except Exception as exc:  # noqa: BLE001
     survey_agent = None
     startup_error = str(exc)
@@ -200,14 +205,14 @@ async def upload(request: Request, files: list[UploadFile] = File(...)) -> dict:
         # Single gunicorn worker: a very large synchronous parse/stat pass can
         # delay other users' concurrent requests. Not a hard limit — just
         # visibility for ops if uploads start trending much larger than 1M rows.
-        logger.warning("[%s] upload_large_dataset session=%s rows=%s — may briefly delay other requests "
+        logger.error("[%s] upload_large_dataset session=%s rows=%s — may briefly delay other requests "
                        "(single worker)", req_id, session.session_id, session.row_count)
     if session.skipped_files:
-        logger.warning("[%s] upload_skipped_files session=%s skipped=%s", req_id, session.session_id, session.skipped_files)
+        logger.error("[%s] upload_skipped_files session=%s skipped=%s", req_id, session.session_id, session.skipped_files)
     # Precompute the dashboard now (dataset is already fully in memory here) so
     # the first "Dashboard" click is instant instead of a second wait.
     session.dashboard_cache = _compute_dashboard(session)
-    logger.info("[%s] upload_success session=%s files=%s rows=%s", req_id, session.session_id, session.files, session.row_count)
+    logger.error("[%s] upload_success session=%s files=%s rows=%s", req_id, session.session_id, session.files, session.row_count)
     return {
         "session_id": session.session_id,
         "filename": session.filename,
@@ -240,7 +245,7 @@ def chat(payload: ChatRequest, request: Request) -> dict:
     cache_key = payload.question.strip().lower()
     cached = session.answer_cache.get(cache_key)
     if cached is not None:
-        logger.info("[%s] chat_cache_hit session=%s", req_id, payload.session_id)
+        logger.error("[%s] chat_cache_hit session=%s", req_id, payload.session_id)
         session.add_message("user", payload.question)
         session.add_message("assistant", cached["answer"])
         return {**cached, "active_sheet": session.active_sheet, "sheet_names": session.sheet_names}
@@ -251,7 +256,7 @@ def chat(payload: ChatRequest, request: Request) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.exception("[%s] chat_failed session=%s", req_id, payload.session_id)
         raise HTTPException(500, f"Agent failed: {exc}") from exc
-    logger.info("[%s] chat_ok session=%s in %dms", req_id, payload.session_id, int((time.time() - t0) * 1000))
+    logger.error("[%s] chat_ok session=%s in %dms", req_id, payload.session_id, int((time.time() - t0) * 1000))
 
     session.add_message("user", payload.question)
     session.add_message("assistant", str(resp.get("answer", "")))

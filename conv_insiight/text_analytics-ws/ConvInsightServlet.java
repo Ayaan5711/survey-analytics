@@ -67,20 +67,20 @@ public class ConvInsightServlet extends HttpServlet {
         try {
             String contentType = request.getContentType();
             if (contentType != null && contentType.startsWith("multipart/")) {
-                logger.info("[" + reqId + "] upload request received");
+                logger.error("[" + reqId + "] upload request received");
                 String result = uploadFile(request, reqId);
                 response.getWriter().write(result);
-                logger.info("[" + reqId + "] upload ok in " + (System.currentTimeMillis() - t0) + "ms");
+                logger.error("[" + reqId + "] upload ok in " + (System.currentTimeMillis() - t0) + "ms");
                 return;
             }
 
             JsonNode body = mapper.readTree(request.getInputStream());
             String action = body.path("action").asText("");
-            logger.info("[" + reqId + "] action=" + action + " received");
+            logger.error("[" + reqId + "] action=" + action + " received");
 
             String result = dispatch(action, body, reqId);
             response.getWriter().write(result);
-            logger.info("[" + reqId + "] action=" + action + " ok in " + (System.currentTimeMillis() - t0) + "ms");
+            logger.error("[" + reqId + "] action=" + action + " ok in " + (System.currentTimeMillis() - t0) + "ms");
 
         } catch (Exception e) {
             logger.error("[" + reqId + "] request failed after " + (System.currentTimeMillis() - t0) + "ms", e);
@@ -137,7 +137,7 @@ public class ConvInsightServlet extends HttpServlet {
             fileCount++;
         }
         if (!any) throw new ServletException("No files found in upload");
-        logger.info("[" + reqId + "] forwarding " + fileCount + " file(s) to Python layer");
+        logger.error("[" + reqId + "] forwarding " + fileCount + " file(s) to Python layer");
 
         req.setEntity(builder.build());
         return execute(req, reqId);
@@ -184,7 +184,7 @@ public class ConvInsightServlet extends HttpServlet {
             String body = EntityUtils.toString(resp.getEntity(), StandardCharsets.UTF_8);
 
             if (status >= 400) {
-                logger.warn("[" + reqId + "] Python layer returned HTTP " + status);
+                logger.error("[" + reqId + "] Python layer returned HTTP " + status);
                 throw new RuntimeException("HTTP " + status + ": " + body);
             }
 

@@ -345,8 +345,8 @@ async function doUpload(fileList) {
       );
     }
 
-    // AI analysis is opt-in (costs one LLM call) — user clicks "Analyze" in the
-    // insight panel instead of it firing automatically on every upload.
+    // Kick off background AI analysis (restored to original automatic behavior).
+    loadAutoInsights();
 
   } catch (err) {
     statusMsg.textContent = `Upload error: ${err.message}`;
