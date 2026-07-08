@@ -12,12 +12,23 @@ _SESSION_TTL_SECONDS = 4 * 60 * 60  # evict sessions idle this long (bounds memo
 _MAX_CHAT_HISTORY = 40              # keep a bit more than the agent actually reads, then trim
 
 
-def _read_any(filename: str, raw: bytes) -> list[pd.DataFrame]:
-    """Read a CSV/Excel upload into one or more frames (one per sheet)."""
+def _read_any(filename: str, raw: bytes) -> list[tuple[str, pd.DataFrame]]:
+    """Read a CSV/Excel upload into one or more (label, frame) parts.
+
+    label is just the filename for CSV / single-sheet Excel, or
+    "filename — SheetName" for each sheet of a multi-sheet workbook — this
+    keeps every part uniquely identifiable so a mismatched sheet can be
+    reported by name instead of being confused with a same-named sibling
+    sheet from the same file (a real filename collision otherwise makes a
+    dropped sheet impossible to distinguish from a kept one).
+    """
     if filename.lower().endswith(".csv"):
-        return [pd.read_csv(io.BytesIO(raw))]
+        return [(filename, pd.read_csv(io.BytesIO(raw)))]
     book = pd.read_excel(io.BytesIO(raw), sheet_name=None)  # all sheets
-    return [df for df in book.values() if not df.empty]
+    non_empty = {name: df for name, df in book.items() if not df.empty}
+    if len(non_empty) <= 1:
+        return [(filename, df) for df in non_empty.values()]
+    return [(f"{filename} — {sheet}", df) for sheet, df in non_empty.items()]
 
 
 def _sig(df: pd.DataFrame) -> tuple:
@@ -46,9 +57,10 @@ class SurveySession:
     session_id: str
     filename: str                 # combined label, e.g. "a.xlsx + b.xlsx"
     files: list[str]              # individual uploaded file names actually combined
+    sheets: list[str]             # individual parts combined — "file.xlsx" or "file.xlsx — SheetName"
     df: pd.DataFrame              # all files combined (in memory, like the original design)
     profile: str                  # compact text profile for the LLM
-    skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined
+    skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined (by part label)
     chat_history: list[dict[str, str]] = field(default_factory=list)
     last_active: float = field(default_factory=time.time)
 
@@ -62,14 +74,15 @@ class SurveySession:
             # reads the last ~16 messages anyway.
             self.chat_history = self.chat_history[-_MAX_CHAT_HISTORY:]
 
-    # Kept for frontend compatibility (his UI expects these names).
+    # Kept for frontend compatibility (his UI expects these names) — now backed
+    # by real per-sheet labels instead of just the uploaded filenames.
     @property
     def sheet_names(self) -> list[str]:
-        return self.files
+        return self.sheets
 
     @property
     def active_sheet(self) -> str:
-        return self.filename
+        return self.sheets[0] if self.sheets else self.filename
 
     @property
     def columns(self) -> list[str]:
@@ -95,28 +108,31 @@ class SurveySessionStore:
         if not uploads:
             raise ValueError("No files provided.")
 
-        parts: list[tuple[str, pd.DataFrame]] = []
+        parts: list[tuple[str, str, pd.DataFrame]] = []  # (source_filename, part_label, df)
         for fname, raw in uploads:
-            for df in _read_any(fname, raw):
-                parts.append((fname, df))
+            for label, df in _read_any(fname, raw):
+                parts.append((fname, label, df))
         if not parts:
             raise ValueError("Uploaded file(s) had no readable data.")
 
-        groups: dict[tuple, list[tuple[str, pd.DataFrame]]] = {}
-        for fname, df in parts:
-            groups.setdefault(_sig(df), []).append((fname, df))
-        best_sig = max(groups, key=lambda s: sum(len(d) for _, d in groups[s]))
+        groups: dict[tuple, list[tuple[str, str, pd.DataFrame]]] = {}
+        for fname, label, df in parts:
+            groups.setdefault(_sig(df), []).append((fname, label, df))
+        best_sig = max(groups, key=lambda s: sum(len(d) for _, _, d in groups[s]))
         chosen = groups[best_sig]
 
-        combined = pd.concat([d for _, d in chosen], ignore_index=True)
-        file_names = list(dict.fromkeys(fname for fname, _ in chosen))  # de-duplicated, order preserved
+        combined = pd.concat([d for _, _, d in chosen], ignore_index=True)
+        file_names = list(dict.fromkeys(fname for fname, _, _ in chosen))     # distinct source files
+        part_labels = list(dict.fromkeys(label for _, label, _ in chosen))    # distinct sheets/parts
 
-        # Any file/sheet whose columns didn't match the majority schema is left
-        # out of the combined dataset — surface this instead of dropping it silently.
-        chosen_names = set(file_names)
+        # Any part (sheet or file) whose columns didn't match the majority schema is
+        # left out of the combined dataset — surfaced by its own label (not the
+        # parent filename) so a dropped sheet can't be masked by a sibling sheet
+        # from the same file that WAS kept.
+        chosen_labels = set(part_labels)
         skipped = list(dict.fromkeys(
-            fname for sig, group in groups.items() if sig != best_sig
-            for fname, _ in group if fname not in chosen_names
+            label for sig, group in groups.items() if sig != best_sig
+            for _, label, _ in group if label not in chosen_labels
         ))
 
         self._evict_stale()
@@ -125,7 +141,7 @@ class SurveySessionStore:
         profile = _build_profile(combined, file_names, len(combined))
         session = SurveySession(
             session_id=session_id, filename=" + ".join(file_names), files=file_names,
-            df=combined, profile=profile, skipped_files=skipped,
+            sheets=part_labels, df=combined, profile=profile, skipped_files=skipped,
         )
         self._sessions[session_id] = session
         return session
