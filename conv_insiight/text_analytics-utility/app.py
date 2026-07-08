@@ -204,6 +204,9 @@ async def upload(request: Request, files: list[UploadFile] = File(...)) -> dict:
                        "(single worker)", req_id, session.session_id, session.row_count)
     if session.skipped_files:
         logger.warning("[%s] upload_skipped_files session=%s skipped=%s", req_id, session.session_id, session.skipped_files)
+    # Precompute the dashboard now (dataset is already fully in memory here) so
+    # the first "Dashboard" click is instant instead of a second wait.
+    session.dashboard_cache = _compute_dashboard(session)
     logger.info("[%s] upload_success session=%s files=%s rows=%s", req_id, session.session_id, session.files, session.row_count)
     return {
         "session_id": session.session_id,
@@ -228,6 +231,20 @@ def chat(payload: ChatRequest, request: Request) -> dict:
         session = store.get(payload.session_id)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+    # Cost control: an identical question asked again in the same session
+    # (re-checking after upload, clicking a suggested question twice, an
+    # accidental double-submit) is answered from cache instead of re-paying
+    # the full LLM call — the dataset never changes mid-session, so the
+    # deterministic tool numbers would be identical anyway.
+    cache_key = payload.question.strip().lower()
+    cached = session.answer_cache.get(cache_key)
+    if cached is not None:
+        logger.info("[%s] chat_cache_hit session=%s", req_id, payload.session_id)
+        session.add_message("user", payload.question)
+        session.add_message("assistant", cached["answer"])
+        return {**cached, "active_sheet": session.active_sheet, "sheet_names": session.sheet_names}
+
     t0 = time.time()
     try:
         resp = survey_agent.answer(session, payload.question)
@@ -238,8 +255,10 @@ def chat(payload: ChatRequest, request: Request) -> dict:
 
     session.add_message("user", payload.question)
     session.add_message("assistant", str(resp.get("answer", "")))
-    return {"answer": resp.get("answer", ""), "charts": resp.get("charts", []),
-            "active_sheet": session.active_sheet, "sheet_names": session.sheet_names}
+    result = {"answer": resp.get("answer", ""), "charts": resp.get("charts", [])}
+    if cache_key:
+        session.answer_cache[cache_key] = result
+    return {**result, "active_sheet": session.active_sheet, "sheet_names": session.sheet_names}
 
 
 @app.post("/api/auto-insights")
@@ -286,12 +305,7 @@ def auto_insights(payload: AutoInsightsRequest, request: Request) -> dict:
             "active_sheet": session.active_sheet, "sheet_names": session.sheet_names}
 
 
-@app.post("/api/dashboard")
-def dashboard(payload: SessionRequest) -> dict:
-    try:
-        session = store.get(payload.session_id)
-    except KeyError as exc:
-        raise HTTPException(404, str(exc)) from exc
+def _compute_dashboard(session) -> dict:
     df = _sample_df(session)
     missing_pct = round(float(df.isna().sum().sum()) / max(df.size, 1) * 100, 1)
     return {
@@ -303,6 +317,19 @@ def dashboard(payload: SessionRequest) -> dict:
         "column_info": _column_info(df),
         "charts": _std_charts(df),
     }
+
+
+@app.post("/api/dashboard")
+def dashboard(payload: SessionRequest) -> dict:
+    try:
+        session = store.get(payload.session_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    # The dataset never changes after upload, so the dashboard is computed once
+    # (at upload time) and reused here instead of recomputing on every click.
+    if session.dashboard_cache is None:
+        session.dashboard_cache = _compute_dashboard(session)
+    return session.dashboard_cache
 
 
 @app.post("/api/export-report")

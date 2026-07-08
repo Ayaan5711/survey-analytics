@@ -345,8 +345,8 @@ async function doUpload(fileList) {
       );
     }
 
-    // Kick off background AI analysis
-    loadAutoInsights();
+    // AI analysis is opt-in (costs one LLM call) — user clicks "Analyze" in the
+    // insight panel instead of it firing automatically on every upload.
 
   } catch (err) {
     statusMsg.textContent = `Upload error: ${err.message}`;
@@ -441,9 +441,15 @@ function switchSheet(name) {
   });
 }
 
-// --------- AUTO-INSIGHTS ------------------------------------------------------------------------------------------------------------
+// --------- AUTO-INSIGHTS (on-demand — one LLM call, triggered by the "Analyze" button) --------------------------
+const insightBtn  = document.getElementById("insightBtn");
+const insightHint = document.getElementById("insightHint");
+
 async function loadAutoInsights() {
   if (!sessionId) return;
+  if (insightHint) hide(insightHint);
+  if (insightSkel) show(insightSkel);
+  setLoading(insightBtn, true);
   const thinking = showThinking("Analyzing your data");
 
   try {
@@ -476,14 +482,19 @@ async function loadAutoInsights() {
     if (Array.isArray(data.suggested_questions) && data.suggested_questions.length) {
       renderSuggestedQuestions(data.suggested_questions);
     }
+    if (insightBtn) insightBtn.textContent = "✨ Re-analyze";
 
   } catch (err) {
     thinking.stop();
-    appendMsg("system", `⚠️ Auto-analysis failed: ${err.message}`);
-    // Still hide skeleton
-    if (insightSkel) insightSkel.style.display = "none";
+    appendMsg("system", `⚠️ Auto-analysis failed: ${err.message}`, [], "msg-system-error");
+    if (insightHint) { insightHint.textContent = `Analysis failed: ${err.message}`; show(insightHint); }
+  } finally {
+    if (insightSkel) hide(insightSkel);
+    setLoading(insightBtn, false);
   }
 }
+
+if (insightBtn) insightBtn.addEventListener("click", loadAutoInsights);
 
 function renderInsightSummary(data) {
   if (!insightContent) return;
@@ -551,8 +562,11 @@ msgInput.addEventListener("keydown", e => {
   }
 });
 
+let chatInFlight = false;  // debounce: a fast double-Enter/double-click would otherwise fire two identical LLM calls
+
 chatForm.addEventListener("submit", async e => {
   e.preventDefault();
+  if (chatInFlight) return;
   const question = msgInput.value.trim();
   if (!question) return;
 
@@ -561,6 +575,7 @@ chatForm.addEventListener("submit", async e => {
     return;
   }
 
+  chatInFlight = true;
   appendMsg("user", question);
   msgInput.value = "";
   autoResize();
@@ -586,9 +601,10 @@ chatForm.addEventListener("submit", async e => {
 
   } catch (err) {
     thinking.stop();
-    appendMsg("system", `Error: ${err.message}`);
+    appendMsg("system", `Error: ${err.message}`, [], "msg-system-error");
   } finally {
     setLoading(sendBtn, false);
+    chatInFlight = false;
   }
 });
 

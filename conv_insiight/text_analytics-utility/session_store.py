@@ -37,6 +37,8 @@ def _sig(df: pd.DataFrame) -> tuple:
 
 
 def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
+    """Full profile (columns + sample top-values + numeric stats) — used by the
+    on-demand `dataset_schema` tool when the agent needs the detail."""
     lines = [f"Dataset: {' + '.join(files)} — {row_count} rows (all files combined), {df.shape[1]} columns.",
              "Columns:"]
     for col in df.columns:
@@ -52,6 +54,21 @@ def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
     return "\n".join(lines)
 
 
+def _build_compact_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
+    """Compact profile (name + type + missing% only, no sample values/stats) —
+    used in the system prompt on every chat turn to cut repeated input tokens
+    on wide files. The agent can call `dataset_schema` for the full detail
+    (top values, min/max) whenever a question actually needs it."""
+    lines = [f"Dataset: {' + '.join(files)} — {row_count} rows (all files combined), {df.shape[1]} columns.",
+             "Columns (name: type, missing%) — call dataset_schema for sample values/stats:"]
+    for col in df.columns:
+        s = df[col]
+        miss = round(s.isna().mean() * 100, 1)
+        kind = "numeric" if pd.api.types.is_numeric_dtype(s) else "categorical"
+        lines.append(f"- {col}: {kind}, missing={miss}%")
+    return "\n".join(lines)
+
+
 @dataclass
 class SurveySession:
     session_id: str
@@ -59,10 +76,13 @@ class SurveySession:
     files: list[str]              # individual uploaded file names actually combined
     sheets: list[str]             # individual parts combined — "file.xlsx" or "file.xlsx — SheetName"
     df: pd.DataFrame              # all files combined (in memory, like the original design)
-    profile: str                  # compact text profile for the LLM
+    profile: str                  # compact profile sent on every chat turn (cost control)
+    full_profile: str             # full profile with sample values/stats — served by the dataset_schema tool
     skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined (by part label)
     chat_history: list[dict[str, str]] = field(default_factory=list)
     last_active: float = field(default_factory=time.time)
+    answer_cache: dict[str, dict] = field(default_factory=dict)   # question (normalized) -> {answer, charts}
+    dashboard_cache: dict | None = None                            # computed once at upload, reused on demand
 
     def touch(self) -> None:
         self.last_active = time.time()
@@ -138,10 +158,12 @@ class SurveySessionStore:
         self._evict_stale()
 
         session_id = str(uuid.uuid4())
-        profile = _build_profile(combined, file_names, len(combined))
+        profile = _build_compact_profile(combined, file_names, len(combined))
+        full_profile = _build_profile(combined, file_names, len(combined))
         session = SurveySession(
             session_id=session_id, filename=" + ".join(file_names), files=file_names,
-            sheets=part_labels, df=combined, profile=profile, skipped_files=skipped,
+            sheets=part_labels, df=combined, profile=profile, full_profile=full_profile,
+            skipped_files=skipped,
         )
         self._sessions[session_id] = session
         return session

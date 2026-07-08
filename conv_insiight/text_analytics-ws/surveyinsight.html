@@ -116,21 +116,22 @@
             <button class="btn-show-more" id="colShowMore" hidden>Show all columns ▾</button>
           </div>
 
-          <!-- AI quick-insights panel (after upload, loaded async) -->
+          <!-- AI quick-insights panel (after upload, on-demand — costs one LLM call, so it's a click not an auto-fire) -->
           <div class="panel-block" id="insightBlock" hidden>
             <div class="blk-hd">
               <p class="blk-label">AI Quick Insights</p>
-              <span class="badge-ai">✨ Auto</span>
+              <button id="insightBtn" class="btn-ghost-sm">✨ Analyze</button>
             </div>
             <div id="insightContent">
               <!-- skeleton shown while LLM works -->
-              <div class="skel-group" id="insightSkel">
+              <div class="skel-group" id="insightSkel" hidden>
                 <div class="skel w-60"></div>
                 <div class="skel w-full"></div>
                 <div class="skel w-80"></div>
                 <div class="skel w-full"></div>
                 <div class="skel w-50"></div>
               </div>
+              <p class="blk-hint" id="insightHint">Click "Analyze" for an automatic AI summary of this dataset.</p>
             </div>
           </div>
 

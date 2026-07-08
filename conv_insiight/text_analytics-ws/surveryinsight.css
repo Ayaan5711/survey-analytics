@@ -389,6 +389,13 @@ body {
   white-space: nowrap;
 }
 
+.blk-hint {
+  font-size: .78rem;
+  color: var(--ink-soft);
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
 /* --------- SHEET TABS ------------------------------------------------------------------------------ */
 .sheet-tab-row {
   display: flex;
@@ -669,6 +676,12 @@ body {
   font-size: .78rem;
   white-space: pre-wrap;
   color: var(--ink-soft);
+}
+
+.msg-system-error {
+  background: linear-gradient(180deg, #fef2f2, #fee2e2);
+  border: 1px solid #fecaca;
+  color: #991b1b;
 }
 
 .msg-auto-insight {

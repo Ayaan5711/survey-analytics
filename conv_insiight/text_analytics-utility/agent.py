@@ -439,12 +439,17 @@ class SurveyAnalysisAgent:
             return json.dumps(resp, default=str)
 
         def dataset_schema() -> str:
-            return session.profile
+            # Full detail (sample top values, numeric min/max/mean) — the system
+            # prompt only carries the compact name+type profile to save tokens on
+            # every turn, so call this when a question needs the fuller picture
+            # (e.g. to see a column's actual value spellings before filtering).
+            return session.full_profile
 
         T = StructuredTool.from_function
         return [
             T(name="dataset_schema", func=dataset_schema,
-              description="Get the dataset profile (columns, types, top values, row count). Call before analysis."),
+              description="Get the FULL dataset profile: sample top values per column, numeric min/max/mean. "
+                          "Call this when you need to see actual column values (e.g. before filtering/matching)."),
             T(name="distribution", func=wrap(_t_distribution), args_schema=OneCol,
               description="Distribution of ONE column (bar for categorical, histogram for numeric). Use for 'distribution/bar chart of X'."),
             T(name="breakdown", func=wrap(_t_breakdown), args_schema=Breakdown,
@@ -499,7 +504,9 @@ class SurveyAnalysisAgent:
             "(distribution, breakdown, pie_chart, crosstab, rank_groups_by_value, "
             "filter_profile, pivot_table, open_text_analysis, compare_segments) so numbers "
             "are exact; use run_python only for custom charts no tool covers. "
-            "The dataset is ALL uploaded files combined. "
+            "The dataset is ALL uploaded files combined. Below is a COMPACT profile (name/type/missing% "
+            "only, to save tokens) — call dataset_schema first if you need to see actual sample values "
+            "before filtering/matching on a specific value. "
             "Always include the tool's numbers (as a markdown table when returned) and a short interpretation.\n\n"
             f"{session.profile}"
         )
