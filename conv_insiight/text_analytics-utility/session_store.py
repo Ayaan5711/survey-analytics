@@ -37,8 +37,20 @@ def _sig(df: pd.DataFrame) -> tuple:
 
 
 def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
-    """Full profile (columns + sample top-values + numeric stats) — used by the
-    on-demand `dataset_schema` tool when the agent needs the detail."""
+    """Full profile: columns + exact sample top-values + numeric stats, sent in
+    the system prompt on every chat turn.
+
+    NOTE: this deliberately matches the original survey app's own
+    _profile_summary() (backend/app/llm/prompts.py) — that app's proven
+    design keeps exact categorical values in the prompt every turn (its own
+    comment: "so the model passes them verbatim to tools") rather than
+    compacting them away. An earlier version of this file tried a much
+    smaller name+type-only profile to cut tokens, with sample values only
+    available via the on-demand dataset_schema tool — reverted after
+    review, since it deviated from the master app's tested behavior and
+    risked the LLM guessing at value spellings instead of using the real
+    ones. Correctness over marginal token savings here.
+    """
     lines = [f"Dataset: {' + '.join(files)} — {row_count} rows (all files combined), {df.shape[1]} columns.",
              "Columns:"]
     for col in df.columns:
@@ -48,24 +60,9 @@ def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
             mean = round(float(s.mean()), 2) if s.notna().any() else None
             lines.append(f"- {col} (numeric): min={s.min()}, max={s.max()}, mean={mean}, missing={miss}%")
         else:
-            top = s.dropna().astype(str).value_counts().head(6)
+            top = s.dropna().astype(str).value_counts().head(8)
             vals = "; ".join(f'"{k}"' for k in top.index)
-            lines.append(f'- {col} (categorical, {int(s.nunique())} values; e.g. {vals}), missing={miss}%')
-    return "\n".join(lines)
-
-
-def _build_compact_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
-    """Compact profile (name + type + missing% only, no sample values/stats) —
-    used in the system prompt on every chat turn to cut repeated input tokens
-    on wide files. The agent can call `dataset_schema` for the full detail
-    (top values, min/max) whenever a question actually needs it."""
-    lines = [f"Dataset: {' + '.join(files)} — {row_count} rows (all files combined), {df.shape[1]} columns.",
-             "Columns (name: type, missing%) — call dataset_schema for sample values/stats:"]
-    for col in df.columns:
-        s = df[col]
-        miss = round(s.isna().mean() * 100, 1)
-        kind = "numeric" if pd.api.types.is_numeric_dtype(s) else "categorical"
-        lines.append(f"- {col}: {kind}, missing={miss}%")
+            lines.append(f'- {col} (categorical, {int(s.nunique())} values; exact values: {vals}), missing={miss}%')
     return "\n".join(lines)
 
 
@@ -76,8 +73,7 @@ class SurveySession:
     files: list[str]              # individual uploaded file names actually combined
     sheets: list[str]             # individual parts combined — "file.xlsx" or "file.xlsx — SheetName"
     df: pd.DataFrame              # all files combined (in memory, like the original design)
-    profile: str                  # compact profile sent on every chat turn (cost control)
-    full_profile: str             # full profile with sample values/stats — served by the dataset_schema tool
+    profile: str                  # full profile (columns, types, exact top-values) — sent every chat turn
     skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined (by part label)
     chat_history: list[dict[str, str]] = field(default_factory=list)
     last_active: float = field(default_factory=time.time)
@@ -158,12 +154,10 @@ class SurveySessionStore:
         self._evict_stale()
 
         session_id = str(uuid.uuid4())
-        profile = _build_compact_profile(combined, file_names, len(combined))
-        full_profile = _build_profile(combined, file_names, len(combined))
+        profile = _build_profile(combined, file_names, len(combined))
         session = SurveySession(
             session_id=session_id, filename=" + ".join(file_names), files=file_names,
-            sheets=part_labels, df=combined, profile=profile, full_profile=full_profile,
-            skipped_files=skipped,
+            sheets=part_labels, df=combined, profile=profile, skipped_files=skipped,
         )
         self._sessions[session_id] = session
         return session
