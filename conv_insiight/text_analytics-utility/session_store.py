@@ -75,6 +75,7 @@ class SurveySession:
     df: pd.DataFrame              # all files combined (in memory, like the original design)
     profile: str                  # full profile (columns, types, exact top-values) — sent every chat turn
     skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined (by part label)
+    skipped_detail: list[dict] = field(default_factory=list)  # [{label, columns}] -- why each was skipped
     chat_history: list[dict[str, str]] = field(default_factory=list)
     last_active: float = field(default_factory=time.time)
     answer_cache: dict[str, dict] = field(default_factory=dict)   # question (normalized) -> {answer, charts}
@@ -144,12 +145,18 @@ class SurveySessionStore:
         # Any part (sheet or file) whose columns didn't match the majority schema is
         # left out of the combined dataset — surfaced by its own label (not the
         # parent filename) so a dropped sheet can't be masked by a sibling sheet
-        # from the same file that WAS kept.
+        # from the same file that WAS kept. skipped_detail also records each
+        # dropped part's column count so the reason ("different columns") is
+        # concrete instead of just "different structure".
         chosen_labels = set(part_labels)
         skipped = list(dict.fromkeys(
             label for sig, group in groups.items() if sig != best_sig
             for _, label, _ in group if label not in chosen_labels
         ))
+        cols_by_label = {label: len(sig) for sig, group in groups.items()
+                         for _, label, _ in group}
+        skipped_detail = [{"label": label, "columns": cols_by_label.get(label, 0)}
+                           for label in skipped]
 
         self._evict_stale()
 
@@ -158,6 +165,7 @@ class SurveySessionStore:
         session = SurveySession(
             session_id=session_id, filename=" + ".join(file_names), files=file_names,
             sheets=part_labels, df=combined, profile=profile, skipped_files=skipped,
+            skipped_detail=skipped_detail,
         )
         self._sessions[session_id] = session
         return session

@@ -338,10 +338,27 @@ async function doUpload(fileList) {
     appendMsg("system",
       `✅ Loaded: ${fileLabel}  |  ${data.shape[0].toLocaleString()} rows × ${data.shape[1]} cols`
     );
+
+    // Prominent "which sheet(s) are actually in use" confirmation -- previously
+    // only visible as a highlighted tab in the sidebar, easy to miss.
+    const usedLabel = (data.sheet_names && data.sheet_names.length > 1)
+      ? `${data.sheet_names.length} sheets/parts combined: ${data.sheet_names.map(escHtml).join(", ")}`
+      : (data.sheet_names && data.sheet_names[0]) || data.filename;
+    appendMsg("system",
+      `📄 Using: ${usedLabel} — ${data.shape[0].toLocaleString()} rows × ${data.shape[1]} cols`
+    );
+
     if (data.skipped_files && data.skipped_files.length) {
+      const expectedCols = data.shape[1];
+      const detail = data.skipped_detail || [];
+      const reasons = data.skipped_files.map(label => {
+        const d = detail.find(x => x.label === label);
+        return d ? `${escHtml(label)} (${d.columns} col${d.columns === 1 ? "" : "s"}, expected ${expectedCols})`
+                  : escHtml(label);
+      });
       appendMsg("system",
-        `⚠ ${data.skipped_files.length} file(s) had a different structure and were NOT combined: ` +
-        data.skipped_files.map(escHtml).join(", ")
+        `⚠ ${data.skipped_files.length} sheet(s)/file(s) had different columns and were NOT combined: ` +
+        reasons.join("; ")
       );
     }
 

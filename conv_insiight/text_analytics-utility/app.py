@@ -218,6 +218,7 @@ async def upload(request: Request, files: list[UploadFile] = File(...)) -> dict:
         "filename": session.filename,
         "files": session.files,
         "skipped_files": session.skipped_files,  # schema mismatch — not included in the combined dataset
+        "skipped_detail": session.skipped_detail,  # [{label, columns}] -- why each was skipped
         "sheet_names": session.sheet_names,
         "active_sheet": session.active_sheet,
         "shape": [int(session.row_count), int(len(session.columns))],
