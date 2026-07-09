@@ -323,6 +323,7 @@ def _compute_dashboard(session) -> dict:
         "quality": _quality(df),
         "column_info": _column_info(df),
         "charts": _std_charts(df),
+        "preview": df.head(8).fillna("").to_dict(orient="records"),
     }
 
 
@@ -360,13 +361,18 @@ def export_report(payload: ExportReportRequest) -> dict:
     charts = [c.dict() for c in payload.charts] if payload.charts else _std_charts(df)
     missing_pct = round(float(df.isna().sum().sum()) / max(df.size, 1) * 100, 1)
 
+    def _named(label: str, cols: list[str], cap: int = 8) -> str:
+        shown = ", ".join(cols[:cap])
+        more = f" (+{len(cols) - cap} more)" if len(cols) > cap else ""
+        return f"{len(cols)} {label}: {shown}{more}"
+
     ql = []
     if q["duplicate_rows"]:
         ql.append(f"{q['duplicate_rows']} duplicate rows")
     if q["mostly_empty_columns"]:
-        ql.append(f"{len(q['mostly_empty_columns'])} mostly-empty columns")
+        ql.append(_named("mostly-empty columns", q["mostly_empty_columns"]))
     if q["constant_columns"]:
-        ql.append(f"{len(q['constant_columns'])} constant columns")
+        ql.append(_named("constant columns", q["constant_columns"]))
     quality_text = "\n".join(f"- {line}" for line in ql) if ql else "No major issues detected."
 
     buf = io.BytesIO()

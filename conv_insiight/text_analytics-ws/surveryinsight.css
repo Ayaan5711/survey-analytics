@@ -360,6 +360,11 @@ body {
   gap: .4rem;
 }
 
+.blk-toggle { cursor: pointer; user-select: none; }
+.chev { font-size: .7rem; color: var(--ink-soft); transition: transform .15s; }
+.blk-toggle.is-collapsed .chev { transform: rotate(-90deg); }
+.blk-body.collapsed { display: none; }
+
 .blk-label {
   margin: 0;
   font-size: .72rem;
@@ -1042,6 +1047,12 @@ textarea#msgInput::placeholder { color: #a0aab5; }
 .dash-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .dash-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0; }
 .dash-quality { font-size: 12px; color: #667085; margin: 6px 0 10px; }
+.q-line { margin: 4px 0; line-height: 1.5; }
+.q-cols { color: #475569; }
+.q-more {
+  background: none; border: none; color: #2563eb; font-size: 12px;
+  cursor: pointer; padding: 0 2px; text-decoration: underline;
+}
 
 /* Dashboard/report open as a wide centered overlay instead of a squeezed sidebar block. */
 .lightbox.wide .lb-inner { width: 92vw; max-width: 920px; }

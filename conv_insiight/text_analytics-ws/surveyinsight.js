@@ -644,6 +644,16 @@ chatForm.addEventListener("submit", async e => {
   }
 });
 
+// --------- COLLAPSIBLE SIDEBAR SECTIONS (Sheets/Columns start collapsed -- cuts sidebar clutter) --------------------
+document.querySelectorAll(".blk-toggle").forEach(hd => {
+  hd.addEventListener("click", () => {
+    const body = document.getElementById(hd.dataset.target);
+    if (!body) return;
+    const collapsed = body.classList.toggle("collapsed");
+    hd.classList.toggle("is-collapsed", collapsed);
+  });
+});
+
 // --------- EXPORT CHAT ---------------------------------------------------------------------------------------------------------------
 exportBtn.addEventListener("click", () => {
   if (!chatHistory.length) return;
@@ -737,19 +747,53 @@ async function loadDashboardPanel() {
     if (!res.ok) throw new Error(d.detail || "Dashboard failed");
 
     const q = d.quality || {};
-    const qs = [];
-    if (q.duplicate_rows) qs.push(`${q.duplicate_rows} duplicate rows`);
-    if ((q.mostly_empty_columns || []).length) qs.push(`${q.mostly_empty_columns.length} mostly-empty cols`);
-    if ((q.constant_columns || []).length) qs.push(`${q.constant_columns.length} constant cols`);
+    // Name the actual columns, not just a count -- capped so a 90-column
+    // dataset doesn't turn this into a wall of text, with a "+N more" toggle.
+    function namedList(label, cols, cap = 8) {
+      if (!cols || !cols.length) return "";
+      const shown = cols.slice(0, cap).map(escHtml).join(", ");
+      const rest = cols.length > cap ? cols.slice(cap).map(escHtml).join(", ") : "";
+      const more = rest ? ` <button type="button" class="q-more" data-rest="${escHtml(rest)}">+${cols.length - cap} more</button>` : "";
+      return `<div class="q-line"><strong>${cols.length} ${label}:</strong> <span class="q-cols">${shown}</span>${more}</div>`;
+    }
+    let qualityHtml = "";
+    if (q.duplicate_rows) qualityHtml += `<div class="q-line">⚠ ${q.duplicate_rows} duplicate rows</div>`;
+    qualityHtml += namedList("mostly-empty columns", q.mostly_empty_columns);
+    qualityHtml += namedList("constant columns", q.constant_columns);
+    if (!qualityHtml) qualityHtml = '<div class="q-line">✓ No major quality issues</div>';
 
     let html = '<div class="dash-stats">';
     html += `<div class="stat-tile"><span class="st-val">${numFmt(d.stats.rows)}</span><span class="st-lbl">Rows</span></div>`;
     html += `<div class="stat-tile"><span class="st-val">${d.stats.columns}</span><span class="st-lbl">Columns</span></div>`;
     html += `<div class="stat-tile"><span class="st-val">${d.stats.files_count}</span><span class="st-lbl">Files</span></div>`;
     html += `<div class="stat-tile warn-tile"><span class="st-val">${d.stats.missing_pct}%</span><span class="st-lbl">Missing</span></div></div>`;
-    html += `<div class="dash-quality">${qs.length ? "⚠ " + qs.join(" · ") : "✓ No major quality issues"}</div>`;
+    html += `<div class="dash-quality">${qualityHtml}</div>`;
+
+    // Data preview -- a peek at the actual rows, not just stats about them.
+    if (d.preview && d.preview.length) {
+      const cols = Object.keys(d.preview[0]);
+      html += '<p class="blk-label" style="margin-top:14px">Data preview (first 8 rows)</p>';
+      html += '<div class="table-wrap"><table class="rpt-table"><thead><tr>';
+      cols.forEach(c => { html += `<th>${escHtml(c)}</th>`; });
+      html += '</tr></thead><tbody>';
+      d.preview.forEach(row => {
+        html += '<tr>';
+        cols.forEach(c => { html += `<td>${escHtml(row[c])}</td>`; });
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
     const body = ov.querySelector(".lb-body");
     body.innerHTML = html;
+    body.querySelectorAll(".q-more").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const span = document.createElement("span");
+        span.className = "q-cols";
+        span.textContent = ", " + btn.dataset.rest;
+        btn.replaceWith(span);
+      });
+    });
     const g = buildChartGallery(d.charts || []);
     if (g) body.appendChild(g);
   } catch (err) {

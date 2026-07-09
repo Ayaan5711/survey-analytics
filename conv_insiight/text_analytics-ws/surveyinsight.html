@@ -102,18 +102,26 @@
 
           <!-- Sheet tabs (after upload) -->
           <div class="panel-block" id="sheetBlock" hidden>
-            <p class="blk-label">Sheets</p>
-            <div class="sheet-tab-row" id="sheetTabRow"></div>
+            <div class="blk-hd blk-toggle is-collapsed" data-target="sheetBody">
+              <p class="blk-label">Sheets</p>
+              <span class="chev">▾</span>
+            </div>
+            <div class="blk-body collapsed" id="sheetBody">
+              <div class="sheet-tab-row" id="sheetTabRow"></div>
+            </div>
           </div>
 
           <!-- Column explorer (after upload) -->
           <div class="panel-block" id="colBlock" hidden>
-            <div class="blk-hd">
+            <div class="blk-hd blk-toggle is-collapsed" data-target="colBody">
               <p class="blk-label">Columns</p>
               <span id="colBadge" class="num-badge"></span>
+              <span class="chev">▾</span>
             </div>
-            <ul class="col-list" id="colList" aria-label="Column list"></ul>
-            <button class="btn-show-more" id="colShowMore" hidden>Show all columns ▾</button>
+            <div class="blk-body collapsed" id="colBody">
+              <ul class="col-list" id="colList" aria-label="Column list"></ul>
+              <button class="btn-show-more" id="colShowMore" hidden>Show all columns ▾</button>
+            </div>
           </div>
 
           <!-- AI quick-insights panel (after upload, on-demand — costs one LLM call, so it's a click not an auto-fire) -->
