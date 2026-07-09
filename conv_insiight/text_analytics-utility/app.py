@@ -218,7 +218,8 @@ async def upload(request: Request, files: list[UploadFile] = File(...)) -> dict:
         "filename": session.filename,
         "files": session.files,
         "skipped_files": session.skipped_files,  # schema mismatch — not included in the combined dataset
-        "skipped_detail": session.skipped_detail,  # [{label, columns}] -- why each was skipped
+        "skipped_detail": session.skipped_detail,  # [{label, columns, match_pct}] -- why each was skipped
+        "merge_detail": session.merge_detail,  # [{label, exact_match, missing_columns, extra_columns, match_pct}]
         "sheet_names": session.sheet_names,
         "active_sheet": session.active_sheet,
         "shape": [int(session.row_count), int(len(session.columns))],

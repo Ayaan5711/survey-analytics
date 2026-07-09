@@ -348,16 +348,32 @@ async function doUpload(fileList) {
       `📄 Using: ${usedLabel} — ${data.shape[0].toLocaleString()} rows × ${data.shape[1]} cols`
     );
 
+    // Every part gets an explicit decision shown -- no silent merge/drop.
+    const mergeDetail = data.merge_detail || [];
+    const nearMatches = mergeDetail.filter(m => !m.exact_match);
+    if (nearMatches.length) {
+      const lines = nearMatches.map(m => {
+        const bits = [];
+        if (m.missing_columns && m.missing_columns.length) bits.push(`missing: ${m.missing_columns.map(escHtml).join(", ")}`);
+        if (m.extra_columns && m.extra_columns.length) bits.push(`extra: ${m.extra_columns.map(escHtml).join(", ")}`);
+        return `${escHtml(m.label)} (${m.match_pct}% column match${bits.length ? " — " + bits.join("; ") : ""})`;
+      });
+      appendMsg("system",
+        `⚙ Merged despite not being an exact schema match — differing columns are blank where a file/sheet didn't have them: ` +
+        lines.join("; ")
+      );
+    }
+
     if (data.skipped_files && data.skipped_files.length) {
       const expectedCols = data.shape[1];
       const detail = data.skipped_detail || [];
       const reasons = data.skipped_files.map(label => {
         const d = detail.find(x => x.label === label);
-        return d ? `${escHtml(label)} (${d.columns} col${d.columns === 1 ? "" : "s"}, expected ${expectedCols})`
+        return d ? `${escHtml(label)} (${d.columns} col${d.columns === 1 ? "" : "s"}, ${d.match_pct}% match, expected ${expectedCols})`
                   : escHtml(label);
       });
       appendMsg("system",
-        `⚠ ${data.skipped_files.length} sheet(s)/file(s) had different columns and were NOT combined: ` +
+        `⚠ ${data.skipped_files.length} sheet(s)/file(s) were too different to merge (below 85% column match) and were NOT combined: ` +
         reasons.join("; ")
       );
     }

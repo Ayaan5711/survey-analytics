@@ -31,9 +31,28 @@ def _read_any(filename: str, raw: bytes) -> list[tuple[str, pd.DataFrame]]:
     return [(f"{filename} — {sheet}", df) for sheet, df in non_empty.items()]
 
 
-def _sig(df: pd.DataFrame) -> tuple:
-    """Schema signature = normalized column names (to group same-schema parts)."""
-    return tuple(str(c).strip().lower() for c in df.columns)
+_MERGE_SIMILARITY_THRESHOLD = 0.85  # Jaccard similarity of normalized column names
+                                    # to still count as "almost identical" and merge
+                                    # (e.g. tolerates a couple of extra/missing columns
+                                    # on a 97-column survey; well below that is a
+                                    # genuinely different file, not a near-match).
+
+
+def _norm_col(c) -> str:
+    return str(c).strip().lower()
+
+
+def _col_set(df: pd.DataFrame) -> frozenset:
+    """Schema signature = normalized column names, order-independent (so a
+    reordered-but-identical schema still counts as an exact match)."""
+    return frozenset(_norm_col(c) for c in df.columns)
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    if not a and not b:
+        return 1.0
+    union = a | b
+    return len(a & b) / len(union) if union else 0.0
 
 
 def _build_profile(df: pd.DataFrame, files: list[str], row_count: int) -> str:
@@ -75,7 +94,8 @@ class SurveySession:
     df: pd.DataFrame              # all files combined (in memory, like the original design)
     profile: str                  # full profile (columns, types, exact top-values) — sent every chat turn
     skipped_files: list[str] = field(default_factory=list)  # schema mismatch — not combined (by part label)
-    skipped_detail: list[dict] = field(default_factory=list)  # [{label, columns}] -- why each was skipped
+    skipped_detail: list[dict] = field(default_factory=list)  # [{label, columns, match_pct}] -- why each was skipped
+    merge_detail: list[dict] = field(default_factory=list)  # [{label, exact_match, missing_columns, extra_columns}]
     chat_history: list[dict[str, str]] = field(default_factory=list)
     last_active: float = field(default_factory=time.time)
     answer_cache: dict[str, dict] = field(default_factory=dict)   # question (normalized) -> {answer, charts}
@@ -121,7 +141,18 @@ class SurveySessionStore:
         self._sessions: dict[str, SurveySession] = {}
 
     def create_from_uploads(self, uploads: list[tuple[str, bytes]]) -> SurveySession:
-        """uploads = [(filename, bytes), ...]. Same-schema parts are combined into one dataset."""
+        """uploads = [(filename, bytes), ...].
+
+        Every part (each CSV, or each sheet of an Excel file) gets an explicit
+        decision, all surfaced to the caller (no silent drops):
+          - exact schema match to the majority  -> merged
+          - "almost identical" (>= _MERGE_SIMILARITY_THRESHOLD column overlap)
+            -> merged too, aligned by column name; any columns one side lacks
+            just come out NaN for that side's rows (pandas concat's normal
+            union-of-columns behavior)
+          - below the threshold -> skipped, with the actual match% and column
+            count so the reason is concrete, not just "different structure"
+        """
         if not uploads:
             raise ValueError("No files provided.")
 
@@ -132,31 +163,50 @@ class SurveySessionStore:
         if not parts:
             raise ValueError("Uploaded file(s) had no readable data.")
 
-        groups: dict[tuple, list[tuple[str, str, pd.DataFrame]]] = {}
+        col_sets = {label: _col_set(df) for _, label, df in parts}
+
+        # Exact-schema groups first (order-independent) -- the base is whichever
+        # exact group has the most total rows.
+        exact_groups: dict[frozenset, list[tuple[str, str, pd.DataFrame]]] = {}
         for fname, label, df in parts:
-            groups.setdefault(_sig(df), []).append((fname, label, df))
-        best_sig = max(groups, key=lambda s: sum(len(d) for _, _, d in groups[s]))
-        chosen = groups[best_sig]
+            exact_groups.setdefault(col_sets[label], []).append((fname, label, df))
+        base_set = max(exact_groups, key=lambda s: sum(len(d) for _, _, d in exact_groups[s]))
+        base_group = exact_groups[base_set]
+        base_cols = list(base_group[0][2].columns)  # canonical original casing/order
+        norm_to_canonical = {_norm_col(c): c for c in base_cols}
 
-        combined = pd.concat([d for _, _, d in chosen], ignore_index=True)
-        file_names = list(dict.fromkeys(fname for fname, _, _ in chosen))     # distinct source files
-        part_labels = list(dict.fromkeys(label for _, label, _ in chosen))    # distinct sheets/parts
+        merge_detail: list[dict] = []
+        skipped: list[str] = []
+        skipped_detail: list[dict] = []
+        to_merge: list[tuple[str, str, pd.DataFrame]] = []
 
-        # Any part (sheet or file) whose columns didn't match the majority schema is
-        # left out of the combined dataset — surfaced by its own label (not the
-        # parent filename) so a dropped sheet can't be masked by a sibling sheet
-        # from the same file that WAS kept. skipped_detail also records each
-        # dropped part's column count so the reason ("different columns") is
-        # concrete instead of just "different structure".
-        chosen_labels = set(part_labels)
-        skipped = list(dict.fromkeys(
-            label for sig, group in groups.items() if sig != best_sig
-            for _, label, _ in group if label not in chosen_labels
-        ))
-        cols_by_label = {label: len(sig) for sig, group in groups.items()
-                         for _, label, _ in group}
-        skipped_detail = [{"label": label, "columns": cols_by_label.get(label, 0)}
-                           for label in skipped]
+        for fname, label, df in parts:
+            if col_sets[label] == base_set:
+                to_merge.append((fname, label, df))
+                merge_detail.append({"label": label, "exact_match": True,
+                                      "missing_columns": [], "extra_columns": []})
+                continue
+            similarity = _jaccard(col_sets[label], base_set)
+            if similarity >= _MERGE_SIMILARITY_THRESHOLD:
+                missing = [c for c in base_cols if _norm_col(c) not in col_sets[label]]
+                extra = [c for c in df.columns if _norm_col(c) not in norm_to_canonical]
+                # Align this part's columns to the base's canonical names so
+                # concat unions correctly instead of treating a case/whitespace
+                # difference as a whole separate column.
+                renamed = df.rename(columns={c: norm_to_canonical[_norm_col(c)]
+                                              for c in df.columns if _norm_col(c) in norm_to_canonical})
+                to_merge.append((fname, label, renamed))
+                merge_detail.append({"label": label, "exact_match": False,
+                                      "missing_columns": missing, "extra_columns": extra,
+                                      "match_pct": round(similarity * 100, 1)})
+            else:
+                skipped.append(label)
+                skipped_detail.append({"label": label, "columns": len(col_sets[label]),
+                                        "match_pct": round(similarity * 100, 1)})
+
+        combined = pd.concat([d for _, _, d in to_merge], ignore_index=True, sort=False)
+        file_names = list(dict.fromkeys(fname for fname, _, _ in to_merge))
+        part_labels = list(dict.fromkeys(label for _, label, _ in to_merge))
 
         self._evict_stale()
 
@@ -165,7 +215,7 @@ class SurveySessionStore:
         session = SurveySession(
             session_id=session_id, filename=" + ".join(file_names), files=file_names,
             sheets=part_labels, df=combined, profile=profile, skipped_files=skipped,
-            skipped_detail=skipped_detail,
+            skipped_detail=skipped_detail, merge_detail=merge_detail,
         )
         self._sessions[session_id] = session
         return session
